@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+*.hdf5
+*.h5
+*.zip
+*.tar.gz
+.DS_Store
+wandb/
