@@ -111,11 +111,16 @@ def test_real_cameras_nonzero(first_demo):
 
 
 def test_image_range(first_demo):
-    """Images must be float32 in [0, 1]."""
+    """Images must be float32 in [0, 1] or uint8 in [0, 255]."""
     images = first_demo["images"][:]
-    assert images.dtype == np.float32
-    assert images.min() >= 0.0, f"Image min {images.min()} < 0"
-    assert images.max() <= 1.0, f"Image max {images.max()} > 1"
+    if images.dtype == np.float32:
+        assert images.min() >= 0.0, f"Image min {images.min()} < 0"
+        assert images.max() <= 1.0, f"Image max {images.max()} > 1"
+    elif images.dtype == np.uint8:
+        assert images.min() >= 0, f"Image min {images.min()} < 0"
+        assert images.max() <= 255, f"Image max {images.max()} > 255"
+    else:
+        pytest.fail(f"Unexpected image dtype: {images.dtype}")
 
 
 # ---------------------------------------------------------------------------
@@ -123,14 +128,19 @@ def test_image_range(first_demo):
 # ---------------------------------------------------------------------------
 
 def test_action_ranges(hdf5_file, train_keys):
-    """Actions for single-arm tasks must be in [-1, 1] (OSC_POSE pre-scaling)."""
-    action_dim = hdf5_file.attrs["action_dim"]
-    if action_dim != 7:
-        pytest.skip("Action range check only applies to single-arm (7D) tasks")
-    for key in train_keys:
-        actions = hdf5_file[f"data/{key}"]["actions"][:]
-        assert actions.min() >= -1.0 - 1e-5, f"Demo {key}: action below -1"
-        assert actions.max() <= 1.0 + 1e-5, f"Demo {key}: action above 1"
+    """Actions must be within expected ranges per benchmark."""
+    benchmark = hdf5_file.attrs.get("benchmark", "robomimic")
+    if benchmark == "robomimic":
+        # OSC_POSE pre-scaling: actions bounded to [-1, 1]
+        for key in train_keys:
+            actions = hdf5_file[f"data/{key}"]["actions"][:]
+            assert actions.min() >= -1.0 - 1e-5, f"Demo {key}: action below -1"
+            assert actions.max() <= 1.0 + 1e-5, f"Demo {key}: action above 1"
+    else:
+        # RLBench/ManiSkill: raw delta actions (meters/radians), check no NaN/Inf
+        for key in train_keys:
+            actions = hdf5_file[f"data/{key}"]["actions"][:]
+            assert np.isfinite(actions).all(), f"Demo {key}: actions contain NaN/Inf"
 
 
 # ---------------------------------------------------------------------------
