@@ -86,13 +86,20 @@ def test_actions_dtype(sample):
 # view_present flags
 # ---------------------------------------------------------------------------
 
-def test_view_present_flags(sample):
-    """For robomimic: slots 0 and 3 are real, slots 1 and 2 are padded."""
+def test_view_present_flags(sample, hdf5_path):
+    """View present flags must match the benchmark's camera layout."""
+    import h5py
     vp = sample["view_present"].numpy()
-    assert vp[0] == True,  "Slot 0 (agentview) should be present"
-    assert vp[1] == False, "Slot 1 should be absent"
-    assert vp[2] == False, "Slot 2 should be absent"
-    assert vp[3] == True,  "Slot 3 (wrist) should be present"
+    with h5py.File(hdf5_path, "r") as f:
+        benchmark = f.attrs.get("benchmark", "robomimic")
+    if benchmark == "robomimic":
+        assert vp[0] == True,  "Slot 0 (agentview) should be present"
+        assert vp[1] == False, "Slot 1 should be absent"
+        assert vp[2] == False, "Slot 2 should be absent"
+        assert vp[3] == True,  "Slot 3 (wrist) should be present"
+    elif benchmark == "rlbench":
+        for i in range(NUM_CAMERA_SLOTS):
+            assert vp[i] == True, f"RLBench slot {i} should be present"
 
 
 def test_imagenet_normalization_applied(dataset):
@@ -120,9 +127,11 @@ def test_padded_slots_are_negative(sample):
     """Padded slots (zero pixels) normalize to ~[-1.8, -1.6] range."""
     imgs = sample["images"].numpy()
     vp   = sample["view_present"].numpy()
+    has_padded = not vp.all()
+    if not has_padded:
+        pytest.skip("No padded slots in this benchmark (all views present)")
     for slot in range(NUM_CAMERA_SLOTS):
         if not vp[slot]:
-            # Padded pixels are 0.0 in [0,1]; after ImageNet norm they're negative
             slot_imgs = imgs[:, slot]
             assert slot_imgs.max() < 0.0, (
                 f"Padded slot {slot} has unexpected positive values: {slot_imgs.max():.3f}"
