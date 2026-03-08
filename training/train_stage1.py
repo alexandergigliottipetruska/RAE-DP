@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from data_pipeline.datasets.stage1_dataset import Stage1Dataset
 from models.losses import (
@@ -388,7 +389,7 @@ def train_stage1(
         epoch_losses: dict[str, float] = {}
         n_steps = 0
 
-        for batch in train_loader:
+        for batch in tqdm(train_loader, desc=f"Epoch {epoch} [{phase}]", leave=True):
             batch = {k: v.to(device) for k, v in batch.items()}
 
             step_losses = train_step(
