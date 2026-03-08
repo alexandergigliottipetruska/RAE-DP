@@ -7,3 +7,5 @@ __pycache__/
 *.tar.gz
 .DS_Store
 wandb/
+/*.png
+*.log
