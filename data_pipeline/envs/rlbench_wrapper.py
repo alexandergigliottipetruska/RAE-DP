@@ -4,8 +4,14 @@ Wraps an RLBench Environment to implement the BaseManipulationEnv interface.
 Extracts 4 camera views (front, left_shoulder, right_shoulder, wrist),
 resizes to 224x224, applies ImageNet normalization.
 
-The policy outputs delta-EE actions, but RLBench expects absolute EE poses.
-This wrapper maintains internal EE state and accumulates deltas each step.
+The policy outputs 8D absolute EE poses [position(3), quaternion_xyzw(4), gripper(1)].
+This wrapper uses OMPL motion planning (EndEffectorPoseViaPlanning) to reach
+each target pose, matching the approach used by RVT-2 and Chain-of-Action.
+
+OMPL plans a collision-free path from the current pose to the target and
+executes it step-by-step through the sim. This handles large pose jumps
+and is the standard action mode used by all major RLBench papers
+(PerAct, RVT, RVT-2, CoA, Act3D).
 
 Gripper is thresholded at 0.5 to binary {0.0, 1.0}.
 
@@ -14,7 +20,6 @@ Requires CoppeliaSim (WSL2 or remote Linux).
 
 import numpy as np
 from PIL import Image
-from scipy.spatial.transform import Rotation as R
 
 from data_pipeline.envs.base_env import BaseManipulationEnv
 
@@ -69,12 +74,15 @@ def _process_image(img_hwc: np.ndarray, target_size: int = 224) -> np.ndarray:
 class RLBenchWrapper(BaseManipulationEnv):
     """Wraps an RLBench environment for policy evaluation.
 
-    Accumulates delta-EE actions into absolute poses for the sim.
+    Passes absolute EE pose actions to the sim via OMPL motion planning,
+    matching the RVT-2 / CoA evaluation approach.
 
     Args:
         task_name: Task name (must be in TASK_CLASS_MAP).
         image_size: Target image size (default 224).
         headless: Run CoppeliaSim headless (default True).
+        cameras: Enable vision sensors (default True). Set False for
+                 headless WSL2 to avoid OpenGL segfault.
     """
 
     def __init__(
@@ -82,15 +90,17 @@ class RLBenchWrapper(BaseManipulationEnv):
         task_name: str,
         image_size: int = 224,
         headless: bool = True,
+        cameras: bool = True,
     ):
         from rlbench.environment import Environment
         from rlbench.action_modes.action_mode import MoveArmThenGripper
-        from rlbench.action_modes.arm_action_modes import EndEffectorPoseViaPlanning
         from rlbench.action_modes.gripper_action_modes import Discrete
         from rlbench.observation_config import ObservationConfig
+        from data_pipeline.envs.rlbench_action_mode import EndEffectorPoseViaPlanning2
 
         self._task_name = task_name
         self._image_size = image_size
+        self._cameras = cameras
 
         if task_name not in TASK_CLASS_MAP:
             raise ValueError(
@@ -100,10 +110,12 @@ class RLBenchWrapper(BaseManipulationEnv):
 
         obs_config = ObservationConfig()
         obs_config.set_all_low_dim(True)
-        obs_config.set_all_high_dim(True)
+        obs_config.set_all_high_dim(cameras)
 
+        # OMPL motion planning — matches RVT-2 and CoA eval approach.
+        # Plans collision-free path to target pose, executes step-by-step.
         action_mode = MoveArmThenGripper(
-            arm_action_mode=EndEffectorPoseViaPlanning(),
+            arm_action_mode=EndEffectorPoseViaPlanning2(),
             gripper_action_mode=Discrete(),
         )
 
@@ -119,45 +131,31 @@ class RLBenchWrapper(BaseManipulationEnv):
         self._task = self._env.get_task(task_cls)
 
         self._last_obs = None
-        # Internal EE state for delta->absolute accumulation
-        self._current_pos = None      # [3]
-        self._current_rot = None      # Rotation object
 
     def reset(self) -> dict:
         descriptions, obs = self._task.reset()
         self._last_obs = obs
-
-        # Initialize EE state from sim
-        self._current_pos = np.array(obs.gripper_pose[:3], dtype=np.float64)
-        self._current_rot = R.from_quat(obs.gripper_pose[3:])  # xyzw
-
         return {"descriptions": descriptions}
 
     def step(self, action: np.ndarray) -> tuple[dict, float, bool, dict]:
-        """Execute one delta-EE action by accumulating to absolute pose.
+        """Execute one absolute EE pose action via OMPL motion planning.
 
         Args:
-            action: [7] float32 — [delta_pos(3), delta_rotvec(3), gripper(1)]
+            action: [8] float32 — [position(3), quaternion_xyzw(4), gripper(1)]
         """
-        delta_pos = action[:3].astype(np.float64)
-        delta_rotvec = action[3:6].astype(np.float64)
-        gripper_raw = float(action[6])
+        position = action[:3].astype(np.float64)
+        quat_xyzw = action[3:7].astype(np.float64)
+        gripper = 1.0 if float(action[7]) > 0.5 else 0.0
 
-        # Accumulate deltas to absolute pose
-        self._current_pos = self._current_pos + delta_pos
-        delta_rot = R.from_rotvec(delta_rotvec)
-        self._current_rot = delta_rot * self._current_rot  # world-frame
+        # Build action: [x, y, z, qx, qy, qz, qw, gripper]
+        abs_action = np.concatenate([position, quat_xyzw, [gripper]])
 
-        # Threshold gripper to binary
-        gripper = 1.0 if gripper_raw > 0.5 else 0.0
-
-        # Build absolute action: [x, y, z, qx, qy, qz, qw, gripper]
-        abs_quat = self._current_rot.as_quat()  # xyzw
-        abs_action = np.concatenate([
-            self._current_pos, abs_quat, [gripper]
-        ])
-
-        obs, reward, terminate = self._task.step(abs_action)
+        try:
+            obs, reward, terminate = self._task.step(abs_action)
+        except Exception:
+            # Planning can fail for unreachable poses.
+            # Treat as episode termination with no success.
+            return {}, 0.0, True, {"success": False}
         self._last_obs = obs
 
         success = reward == 1.0

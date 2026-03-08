@@ -137,7 +137,7 @@ def test_action_ranges(hdf5_file, train_keys):
             assert actions.min() >= -1.0 - 1e-5, f"Demo {key}: action below -1"
             assert actions.max() <= 1.0 + 1e-5, f"Demo {key}: action above 1"
     else:
-        # RLBench/ManiSkill: raw delta actions (meters/radians), check no NaN/Inf
+        # RLBench/ManiSkill: absolute EE poses or other raw actions, check no NaN/Inf
         for key in train_keys:
             actions = hdf5_file[f"data/{key}"]["actions"][:]
             assert np.isfinite(actions).all(), f"Demo {key}: actions contain NaN/Inf"
