@@ -47,7 +47,7 @@ class FrozenMultiViewEncoder(nn.Module):
             login(token=secrets["huggingface_token"])
             
             # load the DINOv3 ViT-L16 from Hugging Face
-            self.backbone = AutoModel.from_pretrained('facebook/dinov3-vitl16-pretrain-lvd1689m')
+            self.backbone = AutoModel.from_pretrained('facebook/dinov3-vitl16-pretrain-lvd1689m', trust_remote_code=True)
         else:
             self.backbone = _MockBackbone()
 
@@ -68,6 +68,7 @@ class FrozenMultiViewEncoder(nn.Module):
         """Override train to ensure the backbone stays in eval mode."""
         super().train(mode)
         self.backbone.eval()
+        return self
 
     def forward(self, x):
         """
