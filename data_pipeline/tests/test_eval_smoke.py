@@ -15,6 +15,7 @@ Usage:
   python -m pytest tests/test_eval_smoke.py -m rlbench -v
 """
 
+import pickle
 from pathlib import Path
 
 import h5py
@@ -33,6 +34,7 @@ _ROBOMIMIC_UNIFIED = _DATA_ROOT / "unified" / "robomimic" / "lift" / "ph.hdf5"
 _ROBOMIMIC_RAW = _DATA_ROOT / "raw" / "robomimic" / "lift" / "ph" / "image.hdf5"
 
 _RLBENCH_UNIFIED_DIR = _DATA_ROOT / "unified" / "rlbench"
+_RLBENCH_RAW_DIR = _DATA_ROOT / "raw" / "rlbench" / "data" / "train"
 
 
 # ---------------------------------------------------------------------------
@@ -188,37 +190,64 @@ class TestRandomPolicyRobomimic:
 class TestGTReplayRLBench:
     """Ground-truth replay of RLBench demos through RLBenchWrapper.
 
-    Tests the delta->absolute accumulation in the wrapper by feeding
-    stored delta actions and checking task success.
+    Feeds stored 8D absolute EE pose actions through the wrapper and checks
+    task success. Scene is restored from raw demo pickles.
 
-    Pass criterion: comparable to Phase 2 sim replay rates.
-    - close_jar: ~1/5 (20%)
-    - open_drawer: ~3/5 (60%)
+    Pass criterion: >= 80% on each task (absolute poses avoid delta drift).
     """
 
-    def _run_gt_replay(self, task_name, n_demos=5, min_successes=0):
+    def _run_gt_replay(self, task_name, n_demos=5):
         unified_path = _RLBENCH_UNIFIED_DIR / f"{task_name}.hdf5"
         if not unified_path.exists():
             pytest.skip(f"Unified HDF5 not found: {unified_path}")
 
+        raw_ep_dir = _RLBENCH_RAW_DIR / task_name / "all_variations" / "episodes"
+        if not raw_ep_dir.exists():
+            pytest.skip(f"Raw episodes not found: {raw_ep_dir}")
+
         from data_pipeline.envs.rlbench_wrapper import RLBenchWrapper
 
-        env = RLBenchWrapper(task_name)
+        env = RLBenchWrapper(task_name, cameras=False)
+
+        # Map episode dirs (sorted by index)
+        ep_dirs = sorted(
+            [d for d in raw_ep_dir.iterdir()
+             if d.is_dir() and (d / "low_dim_obs.pkl").exists()],
+            key=lambda d: int(d.name.replace("episode", "")),
+        )
+
         successes = 0
 
         with h5py.File(str(unified_path), "r") as f:
-            a_mean = f["norm_stats/actions/mean"][:]
-            a_std = f["norm_stats/actions/std"][:]
-
             demo_keys = [
                 k.decode() if isinstance(k, bytes) else k
                 for k in f["mask/train"][:n_demos]
             ]
 
-            for key in demo_keys:
-                actions = f[f"data/{key}/actions"][:]  # [T, 7] raw deltas
+            for i, key in enumerate(demo_keys):
+                actions = f[f"data/{key}/actions"][:]  # [T, 8] absolute poses
 
-                env.reset()
+                # Load demo pickle for scene restoration
+                with open(ep_dirs[i] / "low_dim_obs.pkl", "rb") as fh:
+                    demo = pickle.load(fh)
+
+                # Restore scene state (same logic as replay_rlbench.py)
+                try:
+                    descriptions, obs = env._task.reset_to_demo(demo)
+                except (KeyError, AttributeError):
+                    obs_list = (demo._observations
+                                if hasattr(demo, '_observations')
+                                else list(demo))
+                    if hasattr(demo, 'random_seed') and demo.random_seed is not None:
+                        demo.restore_state()
+                    variation = 0
+                    if (hasattr(obs_list[0], 'misc')
+                            and obs_list[0].misc is not None):
+                        variation = obs_list[0].misc.get('variation_index', 0)
+                    env._task.set_variation(variation)
+                    descriptions, obs = env._task.reset(demo)
+
+                env._last_obs = obs
 
                 success = False
                 for t in range(len(actions)):
@@ -240,14 +269,19 @@ class TestGTReplayRLBench:
 
     def test_gt_replay_close_jar(self):
         successes, total = self._run_gt_replay("close_jar", n_demos=5)
-        # Phase 2 baseline: 1/5. Accept any success.
-        print(f"close_jar: {successes}/{total} (Phase 2 baseline: ~1/5)")
+        rate = successes / total
+        print(f"close_jar: {successes}/{total} ({rate*100:.0f}%)")
+        # IK + convergence loop should faithfully reproduce demo actions.
+        # Rare IK failures on extreme poses may still occur.
+        assert rate >= 0.6, \
+            f"Expected >=60% success, got {successes}/{total} ({rate*100:.1f}%)"
 
     def test_gt_replay_open_drawer(self):
         successes, total = self._run_gt_replay("open_drawer", n_demos=5)
-        # Phase 2 baseline: 3/5. Accept >= 1.
-        assert successes >= 1, \
-            f"Expected >= 1/5 for open_drawer, got {successes}/5"
+        rate = successes / total
+        print(f"open_drawer: {successes}/{total} ({rate*100:.0f}%)")
+        assert rate >= 0.6, \
+            f"Expected >=60% success, got {successes}/{total} ({rate*100:.1f}%)"
 
 
 @pytest.mark.rlbench
@@ -264,9 +298,9 @@ class TestRandomPolicyRLBench:
 
         class RandomPolicy:
             def predict(self, images, proprio, view_present):
-                return torch.randn(50, 7) * 0.01  # small actions
+                return torch.randn(50, 8) * 0.01  # small 8D actions
 
-        env = RLBenchWrapper("close_jar")
+        env = RLBenchWrapper("close_jar", cameras=False)
 
         sr, results = evaluate_policy(
             RandomPolicy(), env,

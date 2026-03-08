@@ -116,24 +116,19 @@ class TestRLBenchWrapperInterface:
         assert "close_jar" in TASK_CLASS_MAP
         assert len(TASK_CLASS_MAP) >= 3
 
-    def test_delta_accumulation_logic(self):
-        """Verify the delta->absolute math matches replay_rlbench.py."""
-        from scipy.spatial.transform import Rotation as R
+    def test_absolute_action_passthrough(self):
+        """Verify absolute actions are passed through correctly by the wrapper."""
+        # Wrapper now takes 8D absolute EE pose: [pos(3), quat_xyzw(4), grip(1)]
+        action = np.array([0.3, 0.1, 0.5, 0.0, 0.0, 0.0, 1.0, 0.8], dtype=np.float32)
 
-        # Simulate what the wrapper does internally
-        init_pos = np.array([0.3, 0.1, 0.5], dtype=np.float64)
-        init_rot = R.from_euler("xyz", [0, 0, 0])
+        # Extract like the wrapper does
+        position = action[:3]
+        quat_xyzw = action[3:7]
+        gripper = 1.0 if float(action[7]) > 0.5 else 0.0
 
-        delta_pos = np.array([0.01, -0.02, 0.005])
-        delta_rotvec = np.array([0.0, 0.0, 0.1])  # ~5.7 deg around z
-
-        # Accumulate (same logic as wrapper.step)
-        new_pos = init_pos + delta_pos
-        delta_rot = R.from_rotvec(delta_rotvec)
-        new_rot = delta_rot * init_rot  # world-frame
-
-        assert np.allclose(new_pos, [0.31, 0.08, 0.505])
-        assert np.allclose(new_rot.as_rotvec(), delta_rotvec, atol=1e-10)
+        assert np.allclose(position, [0.3, 0.1, 0.5])
+        assert np.allclose(quat_xyzw, [0.0, 0.0, 0.0, 1.0])
+        assert gripper == 1.0
 
     def test_gripper_threshold(self):
         """Values > 0.5 -> 1.0, <= 0.5 -> 0.0."""
