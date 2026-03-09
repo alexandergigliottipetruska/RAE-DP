@@ -149,6 +149,7 @@ def train_step(
     opt_disc: torch.optim.Optimizer,
     epoch: int,
     config: Stage1Config,
+    use_amp: bool = False,
 ) -> dict:
     """One training step: generator update + optional discriminator update.
 
@@ -165,39 +166,43 @@ def train_step(
     real_enc = images_enc.reshape(B * K, 3, 224, 224)[mask]    # (N, 3, H, W)
     real_tgt = images_target.reshape(B * K, 3, 224, 224)[mask] # (N, 3, H, W)
 
+    device_type = real_enc.device.type
+
     # ---- Forward: encoder (frozen) -> adapter -> decoder ----
-    with torch.no_grad():
-        tokens = encoder(real_enc)          # (N, num_patches, d)
+    with torch.amp.autocast(device_type, dtype=torch.bfloat16, enabled=use_amp):
+        with torch.no_grad():
+            tokens = encoder(real_enc)          # (N, num_patches, d)
 
-    adapted = adapter(tokens)               # (N, num_patches, d')
+        adapted = adapter(tokens)               # (N, num_patches, d')
 
-    raw_adapter = _unwrap(adapter)
-    if hasattr(raw_adapter, "noise_augment"):
-        adapted = raw_adapter.noise_augment(adapted)
+        raw_adapter = _unwrap(adapter)
+        if hasattr(raw_adapter, "noise_augment"):
+            adapted = raw_adapter.noise_augment(adapted)
 
-    pred = decoder(adapted)                 # (N, 3, 224, 224) in [0, 1]
+        pred = decoder(adapted)                 # (N, 3, 224, 224) in [0, 1]
 
-    # ---- Generator loss ----
-    L_l1 = l1_loss(pred, real_tgt)
-    L_lpips = lpips_loss_fn(pred, real_tgt, lpips_net)
-    L_rec = L_l1 + config.omega_L * L_lpips
+        # ---- Generator loss ----
+        L_l1 = l1_loss(pred, real_tgt)
+        L_lpips = lpips_loss_fn(pred, real_tgt, lpips_net)
+        L_rec = L_l1 + config.omega_L * L_lpips
+
+        use_gan = epoch >= config.epoch_start_gan
+        if use_gan:
+            logits_fake = disc_forward_with_grad(disc, pred)
+            L_gan = gan_generator_loss(logits_fake)
+            lam = compute_adaptive_lambda(L_rec, L_gan, _unwrap(decoder).last_layer_weight)
+            L_total = L_rec + config.omega_G * lam * L_gan
+        else:
+            L_total = L_rec
 
     losses = {
         "l1": L_l1.item(),
         "lpips": L_lpips.item(),
         "rec": L_rec.item(),
     }
-
-    use_gan = epoch >= config.epoch_start_gan
     if use_gan:
-        logits_fake = disc_forward_with_grad(disc, pred)
-        L_gan = gan_generator_loss(logits_fake)
-        lam = compute_adaptive_lambda(L_rec, L_gan, _unwrap(decoder).last_layer_weight)
-        L_total = L_rec + config.omega_G * lam * L_gan
         losses["gan_gen"] = L_gan.item()
         losses["lambda"] = lam.item()
-    else:
-        L_total = L_rec
 
     losses["total_gen"] = L_total.item()
 
@@ -207,9 +212,10 @@ def train_step(
 
     # ---- Discriminator step (Phase 2+) ----
     if epoch >= config.epoch_start_disc:
-        logits_real = disc(real_tgt.detach())
-        logits_fake_d = disc(pred.detach())
-        L_disc = gan_discriminator_loss(logits_real, logits_fake_d)
+        with torch.amp.autocast(device_type, dtype=torch.bfloat16, enabled=use_amp):
+            logits_real = disc(real_tgt.detach())
+            logits_fake_d = disc(pred.detach())
+            L_disc = gan_discriminator_loss(logits_real, logits_fake_d)
 
         opt_disc.zero_grad()
         L_disc.backward()
@@ -231,9 +237,11 @@ def validate(
     adapter: nn.Module,
     decoder: nn.Module,
     lpips_net,
+    use_amp: bool = False,
 ) -> dict:
     """Compute validation L1 + LPIPS (no GAN, no noise augment)."""
     device = next(decoder.parameters()).device
+    device_type = device.type
     adapter.eval()
     decoder.eval()
 
@@ -253,12 +261,13 @@ def validate(
         real_enc = images_enc.reshape(B * K, 3, 224, 224)[mask]
         real_tgt = images_target.reshape(B * K, 3, 224, 224)[mask]
 
-        tokens = encoder(real_enc)
-        adapted = adapter(tokens)
-        pred = decoder(adapted)
+        with torch.amp.autocast(device_type, dtype=torch.bfloat16, enabled=use_amp):
+            tokens = encoder(real_enc)
+            adapted = adapter(tokens)
+            pred = decoder(adapted)
 
-        total_l1 += l1_loss(pred, real_tgt).item()
-        total_lpips += lpips_loss_fn(pred, real_tgt, lpips_net).item()
+            total_l1 += l1_loss(pred, real_tgt).item()
+            total_lpips += lpips_loss_fn(pred, real_tgt, lpips_net).item()
         n_batches += 1
 
     adapter.train()
@@ -364,6 +373,8 @@ def train_stage1(
     else:
         device = torch.device(device)
 
+    use_amp = (device.type == "cuda")
+
     # Move models to device
     encoder = encoder.to(device).eval()
     adapter = adapter.to(device).train()
@@ -448,6 +459,8 @@ def train_stage1(
             "Phase schedule: disc @ epoch %d, GAN @ epoch %d",
             config.epoch_start_disc, config.epoch_start_gan,
         )
+        if use_amp:
+            log.info("BF16 mixed precision enabled")
 
     best_val_rec = float("inf")
 
@@ -476,7 +489,7 @@ def train_stage1(
 
             step_losses = train_step(
                 batch, encoder, adapter, decoder, disc, lpips_net,
-                opt_gen, opt_disc, epoch, config,
+                opt_gen, opt_disc, epoch, config, use_amp=use_amp,
             )
 
             for k, v in step_losses.items():
@@ -488,7 +501,7 @@ def train_stage1(
 
         # Validation + logging + checkpointing only on rank 0
         if is_main:
-            val = validate(valid_loader, encoder, adapter, decoder, lpips_net)
+            val = validate(valid_loader, encoder, adapter, decoder, lpips_net, use_amp=use_amp)
 
             train_str = " | ".join(f"{k}={v:.4f}" for k, v in sorted(avg.items()))
             val_str = " | ".join(f"{k}={v:.4f}" for k, v in sorted(val.items()))
