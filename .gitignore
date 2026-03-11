@@ -9,3 +9,7 @@ __pycache__/
 wandb/
 /*.png
 *.log
+configs/secrets.yaml
+checkpoints/
+ompl_test_plots/
+ompl_test_videos/
