@@ -122,6 +122,12 @@ def compute_adaptive_lambda(
     how much the GAN loss influences the decoder relative to
     reconstruction.
 
+    In DDP, each GPU computes gradients from its local batch only.
+    Without synchronization, each rank gets a different λ, leading to
+    inconsistent adversarial weighting across GPUs and divergent λ
+    compared to single-GPU training. We all-reduce the gradient norms
+    so every rank computes the same λ from globally-averaged norms.
+
     Reference: taming-transformers/taming/modules/losses/vqperceptual.py
 
     Args:
@@ -139,7 +145,16 @@ def compute_adaptive_lambda(
     gan_grads = torch.autograd.grad(
         L_gan, last_layer_weight, retain_graph=True
     )[0]
-    lam = torch.norm(rec_grads) / (torch.norm(gan_grads) + eps)
+    rec_norm = torch.norm(rec_grads)
+    gan_norm = torch.norm(gan_grads)
+
+    # Sync gradient norms across DDP ranks so every GPU computes the same λ
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        norms = torch.stack([rec_norm, gan_norm])
+        torch.distributed.all_reduce(norms, op=torch.distributed.ReduceOp.AVG)
+        rec_norm, gan_norm = norms[0], norms[1]
+
+    lam = rec_norm / (gan_norm + eps)
     return torch.clamp(lam, 0.0, 1e4).detach()
 
 
