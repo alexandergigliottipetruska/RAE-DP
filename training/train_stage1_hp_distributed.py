@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 import torch
+torch.set_float32_matmul_precision('high')
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
