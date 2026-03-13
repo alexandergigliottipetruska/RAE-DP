@@ -10,3 +10,4 @@ wandb/
 /*.png
 *.log
 configs/secrets.yaml
+/data
