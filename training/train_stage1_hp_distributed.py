@@ -28,6 +28,11 @@ from datetime import datetime
 
 import torch
 # torch.set_float32_matmul_precision('high') # --- SPDUP:
+torch._inductor.config.freezing = True  # Optional: helps performance
+# The direct fix for the donated buffer issue in newer PyTorch:
+import torch._functorch.aot_autograd
+torch._functorch.config.donated_buffer = False
+
 
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -382,8 +387,8 @@ def train_stage1(
         log.info("🚀 Compiling models for maximum speed...")
     
     # Compile the heavy math parts
-    adapter = torch.compile(adapter, mode="reduce-overhead")
-    decoder = torch.compile(decoder, mode="reduce-overhead")
+    adapter = torch.compile(adapter)
+    decoder = torch.compile(decoder)
     lpips_net = torch.compile(lpips_net)
     # --- SPDUP UP TO HERE
 
@@ -394,9 +399,13 @@ def train_stage1(
         # Create temporary optimizers for checkpoint loading
         gen_params = list(adapter.parameters()) + list(decoder.parameters())
         _opt_gen = torch.optim.AdamW(gen_params, lr=config.lr_gen,
-                                     betas=config.betas, weight_decay=config.weight_decay)
+                                     betas=config.betas,
+                                     weight_decay=config.weight_decay,
+                                     fused=True)
         _opt_disc = torch.optim.AdamW(disc.head.parameters(), lr=config.lr_disc,
-                                      betas=config.betas, weight_decay=config.weight_decay)
+                                      betas=config.betas,
+                                      weight_decay=config.weight_decay,
+                                      fused=True)
         start_epoch = load_checkpoint(
             resume_from, adapter, decoder, disc, _opt_gen, _opt_disc
         )
@@ -566,7 +575,7 @@ def train_stage1(
         opt_disc.zero_grad()
 
         loader_iter = tqdm(train_loader, desc=f"Epoch {epoch} [{phase}]", leave=True) if is_main else train_loader
-        for i, batch in enumerate(loader_iter):            
+        for i, batch in enumerate(loader_iter):   
             batch = {k: v.to(device) for k, v in batch.items()}
 
             step_losses = train_step(

@@ -66,13 +66,7 @@ def run_bench_session(branch_name):
                 low = settings['low']
                 high = settings['high']
                 
-                if settings.get('log', False):
-                    # For log scales (like Learning Rate), midpoint is geometric
-                    import math
-                    val = math.pow(10, (math.log10(low) + math.log10(high)) / 2)
-                else:
-                    # For linear scales, midpoint is arithmetic
-                    val = (low + high) / 2
+                val = (low + high) / 2
             else:
                 val = settings.get('low', 0)
 
@@ -83,6 +77,12 @@ def run_bench_session(branch_name):
                     val = int(NUM_EPOCHS * (2/3))  # Start GAN at Epoch 2
                 else:
                     val = 1  # Default to starting at Epoch 1 if not specified
+            if 'lr' in hp_name:
+                val = 1e-4
+            elif 'omega' in hp_name:
+                val = 1.0
+            elif 'weight_decay' in hp_name:
+                val = 1e-5
             
             cfg['training_static'][hp_name] = val
             print(f"   > Freezing {hp_name} to: {val}")
@@ -133,8 +133,9 @@ if __name__ == "__main__":
         original_branch = PERF_BRANCH
 
     try:
-        # Step 1: Run Baseline
+        # Step 1: Run Baseline - currently commented out to save time and replaced with the value gotten last time.
         results[STABLE_BRANCH] = run_bench_session(STABLE_BRANCH)
+        # results[STABLE_BRANCH] = 2089.02
         
         # Step 2: Run Performance
         results[PERF_BRANCH] = run_bench_session(PERF_BRANCH)
