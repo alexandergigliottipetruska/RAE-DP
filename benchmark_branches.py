@@ -1,5 +1,5 @@
 ## RUN LIKE THIS:
-# nohup sh -c "export TQDM_MININTERVAL=0; python3 -u benchmark_branches.py 2>&1 | grep --line-buffered -v -E ' +([0-9]{1,2})%\|'" > benchmark.log 2>&1 &
+# nohup python3 -u benchmark_branches.py > benchmark_final.log 2>&1 &
 
 ## kill all the background things after stopping a run:
 # ps -ux | grep -E "benchmark_branches.py|swarm_worker.py" | grep -v "ssh" | awk '{print $2}' | xargs kill -9
@@ -12,6 +12,8 @@ import yaml
 import os
 import shutil
 import sys
+import threading
+import os
 
 # --- CONFIGURATION ---
 STABLE_BRANCH = "feature/distributed_stage1"
@@ -21,6 +23,7 @@ BACKUP_CONFIG = "configs/swarm_config.yaml.bak"
 NUM_EPOCHS = 3
 DATA_PATH = "data/complete_unified_data/can.hdf5"
 NUM_TRIALS_PER_WORKER = 1
+
 
 def cleanup_optuna_study(cfg):
     """Optional: Deletes the benchmark study from PostgreSQL to keep the DB clean."""
@@ -102,13 +105,28 @@ def run_bench_session(branch_name):
             
         print(f">>> Running {NUM_EPOCHS} epochs (1 trial) on {branch_name}...")
         start_time = time.time()
-        
-        # Launch the local worker process
-        # This will read the REAL_CONFIG file we just overwrote
-        subprocess.run([sys.executable, "training/swarm_worker.py"], check=True)
-        
+
+        # Start the background spy
+        monitor = BottleneckMonitor(interval=15)
+        monitor.start()
+
+        # This tells tqdm to only update once every 3600 seconds (basically once per epoch)
+        env_vars = os.environ.copy()
+        env_vars["TQDM_MININTERVAL"] = "3600" 
+
+        subprocess.run(
+            ["python3", "training/swarm_worker.py"], 
+            check=True,
+            env=env_vars # Pass the quiet environment
+        )
+
         duration = time.time() - start_time
         print(f"\n✅ {branch_name} completed in {duration:.2f}s")
+
+        # STOP AND REPORT HERE
+        monitor.stopped = True
+        monitor.join()
+        monitor.report(branch_name)
         
         # Cleanup the temporary study in the DB
         cleanup_optuna_study(cfg)
@@ -120,6 +138,50 @@ def run_bench_session(branch_name):
         if os.path.exists(BACKUP_CONFIG):
             shutil.move(BACKUP_CONFIG, REAL_CONFIG)
             print(">>> Restored original swarm_config.yaml")
+
+
+class BottleneckMonitor(threading.Thread):
+    def __init__(self, interval=2):
+        super().__init__()
+        self.interval = interval
+        self.stopped = False
+        self.stats = []
+
+    def run(self):
+        query = "utilization.gpu,utilization.memory,power.draw"
+        while not self.stopped:
+            try:
+                out = subprocess.check_output([
+                    "nvidia-smi", f"--query-gpu={query}", "--format=csv,noheader,nounits"
+                ]).decode().strip().split(",")
+                # Convert to integers: [SM_Util, Mem_Util, Power]
+                self.stats.append([int(x) for x in out])
+            except:
+                pass
+            time.sleep(self.interval)
+
+    def report(self, branch_name):
+        if not self.stats:
+            print(f">>> [!] No bottleneck data collected for {branch_name}")
+            return
+        
+        avg_sm = sum(s[0] for s in self.stats) / len(self.stats)
+        avg_mem = sum(s[1] for s in self.stats) / len(self.stats)
+        peak_pwr = max(s[2] for s in self.stats)
+        
+        print(f"\n--- BOTTLECHECK SUMMARY: {branch_name} ---")
+        print(f"   > Avg Compute (SM) Util : {avg_sm:.1f}%")
+        print(f"   > Avg Memory (BW) Util  : {avg_mem:.1f}%")
+        print(f"   > Peak Power Draw       : {peak_pwr}W")
+        
+        if avg_sm > 85 and avg_mem < 60:
+            print("   [!] DIAGNOSIS: COMPUTE BOUND. Your optimizations (TF32/Compile) are targeting the right area.")
+        elif avg_mem > 75:
+            print("   [!] DIAGNOSIS: IO/MEMORY BOUND. Data movement is the bottleneck. Caching DINO is your next best move.")
+        elif avg_sm < 50:
+            print("   [!] DIAGNOSIS: CPU/SUBPROCESS BOUND. The GPU is waiting on Python/Dataloader logic.")
+        print("-" * 45)
+
 
 if __name__ == "__main__":
     results = {}
@@ -133,12 +195,16 @@ if __name__ == "__main__":
         original_branch = PERF_BRANCH
 
     try:
+        # Step 2: Run Performance
+        results[PERF_BRANCH] = run_bench_session(PERF_BRANCH)
+
+        time.sleep(30)  # Short pause between runs to ensure clean state
+
         # Step 1: Run Baseline - currently commented out to save time and replaced with the value gotten last time.
         results[STABLE_BRANCH] = run_bench_session(STABLE_BRANCH)
         # results[STABLE_BRANCH] = 2089.02
         
-        # Step 2: Run Performance
-        results[PERF_BRANCH] = run_bench_session(PERF_BRANCH)
+
         
         # FINAL REPORTING
         print("\n" + "#"*40)
