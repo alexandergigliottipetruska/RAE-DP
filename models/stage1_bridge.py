@@ -120,7 +120,7 @@ class Stage1Bridge(nn.Module):
         d_prime = 512  # adapter output dim
         device = images_enc.device
 
-        adapted = torch.zeros(B, T_o, K, N, d_prime, device=device)
+        adapted = None  # lazily created to match adapter output dtype (handles autocast)
 
         for t in range(T_o):
             for k in range(K):
@@ -138,7 +138,16 @@ class Stage1Bridge(nn.Module):
                 # Adapter is trainable — gradient flows here
                 tokens = self.adapter(normed)  # (B_real, 196, 512)
 
+                # Create output tensor on first adapter call (matches autocast dtype)
+                if adapted is None:
+                    adapted = torch.zeros(B, T_o, K, N, d_prime,
+                                          device=device, dtype=tokens.dtype)
+
                 adapted[mask, t, k] = tokens
+
+        # If no views were present at all, return float32 zeros
+        if adapted is None:
+            adapted = torch.zeros(B, T_o, K, N, d_prime, device=device)
 
         return adapted
 
