@@ -31,7 +31,7 @@ def _make_inputs(b=B, k=K, n=N, d=D):
 class TestViewDropoutShape:
     def test_output_shapes(self):
         """Output shapes match input shapes."""
-        vd = ViewDropout(d_model=D, p_drop=0.5)
+        vd = ViewDropout(d_model=D, p=0.5)
         vd.train()
         tokens, vp = _make_inputs()
         out_tokens, out_vp = vd(tokens, vp)
@@ -57,16 +57,16 @@ class TestViewDropoutShape:
 class TestViewDropoutEval:
     def test_noop_at_eval(self):
         """No views are dropped during evaluation."""
-        vd = ViewDropout(d_model=D, p_drop=0.99)
+        vd = ViewDropout(d_model=D, p=0.99)
         vd.eval()
         tokens, vp = _make_inputs()
         out_tokens, out_vp = vd(tokens, vp)
         assert torch.equal(out_tokens, tokens)
         assert torch.equal(out_vp, vp)
 
-    def test_noop_when_p_drop_zero(self):
-        """No views are dropped when p_drop=0."""
-        vd = ViewDropout(d_model=D, p_drop=0.0)
+    def test_noop_when_p_zero(self):
+        """No views are dropped when p=0."""
+        vd = ViewDropout(d_model=D, p=0.0)
         vd.train()
         tokens, vp = _make_inputs()
         out_tokens, out_vp = vd(tokens, vp)
@@ -80,9 +80,9 @@ class TestViewDropoutEval:
 
 class TestViewDropoutBehavior:
     def test_approximate_drop_rate(self):
-        """Empirical drop rate is close to p_drop over many trials."""
+        """Empirical drop rate is close to p over many trials."""
         p = 0.3
-        vd = ViewDropout(d_model=D, p_drop=p)
+        vd = ViewDropout(d_model=D, p=p)
         vd.train()
         total_views = 0
         dropped_views = 0
@@ -98,7 +98,7 @@ class TestViewDropoutBehavior:
 
     def test_dropped_views_filled_with_mask_token(self):
         """Dropped view tokens are replaced with the mask token, not zeros."""
-        vd = ViewDropout(d_model=D, p_drop=1.0)
+        vd = ViewDropout(d_model=D, p=1.0)
         vd.train()
         tokens, vp = _make_inputs()
         out_tokens, out_vp = vd(tokens, vp)
@@ -114,7 +114,7 @@ class TestViewDropoutBehavior:
 
     def test_present_views_unchanged(self):
         """Views that are NOT dropped retain their original tokens."""
-        vd = ViewDropout(d_model=D, p_drop=0.0)
+        vd = ViewDropout(d_model=D, p=0.0)
         vd.train()
         tokens, vp = _make_inputs()
         out_tokens, _ = vd(tokens, vp)
@@ -122,7 +122,7 @@ class TestViewDropoutBehavior:
 
     def test_absent_views_not_dropped(self):
         """Already-absent views (view_present=False) are not re-dropped."""
-        vd = ViewDropout(d_model=D, p_drop=1.0)
+        vd = ViewDropout(d_model=D, p=1.0)
         vd.train()
         tokens, vp = _make_inputs()
         # Mark view 0 as absent for all batches
@@ -135,7 +135,7 @@ class TestViewDropoutBehavior:
 
     def test_view_present_updated_for_drops(self):
         """Dropped views have their view_present set to False."""
-        vd = ViewDropout(d_model=D, p_drop=1.0)
+        vd = ViewDropout(d_model=D, p=1.0)
         vd.train()
         tokens, vp = _make_inputs()
         _, out_vp = vd(tokens, vp)
@@ -147,7 +147,7 @@ class TestViewDropoutBehavior:
 
     def test_never_drops_all_views(self):
         """At least one view must remain present per sample (safety guarantee)."""
-        vd = ViewDropout(d_model=D, p_drop=0.99)
+        vd = ViewDropout(d_model=D, p=0.99)
         vd.train()
         # Run many times — should never produce all-False row
         for _ in range(500):
@@ -164,7 +164,7 @@ class TestViewDropoutBehavior:
 class TestViewDropoutGradient:
     def test_gradient_flows_to_mask_token(self):
         """Gradient flows through the mask token when views are dropped."""
-        vd = ViewDropout(d_model=D, p_drop=1.0)
+        vd = ViewDropout(d_model=D, p=1.0)
         vd.train()
         tokens, vp = _make_inputs()
         out_tokens, _ = vd(tokens, vp)
@@ -175,7 +175,7 @@ class TestViewDropoutGradient:
 
     def test_gradient_flows_through_kept_views(self):
         """Gradient flows through views that were NOT dropped."""
-        vd = ViewDropout(d_model=D, p_drop=0.0)
+        vd = ViewDropout(d_model=D, p=0.0)
         vd.train()
         tokens = torch.randn(B, K, N, D, requires_grad=True)
         vp = torch.ones(B, K, dtype=torch.bool)
@@ -193,7 +193,7 @@ class TestViewDropoutGradient:
 class TestViewDropoutEdgeCases:
     def test_single_view(self):
         """Works with K=1 (single camera). Never drops it."""
-        vd = ViewDropout(d_model=D, p_drop=0.99)
+        vd = ViewDropout(d_model=D, p=0.99)
         vd.train()
         tokens, vp = _make_inputs(k=1)
         out_tokens, out_vp = vd(tokens, vp)
@@ -203,7 +203,7 @@ class TestViewDropoutEdgeCases:
 
     def test_batch_size_one(self):
         """Works with B=1."""
-        vd = ViewDropout(d_model=D, p_drop=0.5)
+        vd = ViewDropout(d_model=D, p=0.5)
         vd.train()
         tokens, vp = _make_inputs(b=1)
         out_tokens, out_vp = vd(tokens, vp)

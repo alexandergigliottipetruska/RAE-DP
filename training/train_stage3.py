@@ -34,7 +34,7 @@ from tqdm import tqdm
 from diffusers.schedulers.scheduling_ddim import DDIMScheduler
 
 from data_pipeline.datasets.stage3_dataset import Stage3Dataset
-from models.ema import EMAModel
+from models.ema import EMA
 from models.view_dropout import ViewDropout
 
 log = logging.getLogger(__name__)
@@ -111,7 +111,7 @@ class Stage3Config:
     lambda_recon: float = 0.0   # ablate {0, 0.1, 0.25, 0.5}
 
     # View dropout
-    p_drop: float = 0.15
+    p: float = 0.15
 
     # EMA
     ema_decay: float = 0.9999
@@ -353,7 +353,7 @@ def save_checkpoint(
     noise_net: nn.Module,
     adapter: nn.Module,
     optimizer: torch.optim.Optimizer,
-    ema: EMAModel | None,
+    ema: EMA | None,
     val_metrics: dict,
     decoder: nn.Module | None = None,
 ):
@@ -380,7 +380,7 @@ def load_checkpoint(
     noise_net: nn.Module,
     adapter: nn.Module,
     optimizer: torch.optim.Optimizer,
-    ema: EMAModel | None = None,
+    ema: EMA | None = None,
     decoder: nn.Module | None = None,
 ) -> tuple[int, int]:
     """Load Stage 3 checkpoint. Returns (start_epoch, global_step)."""
@@ -453,7 +453,7 @@ def train_stage3(
 
     # View dropout
     view_dropout = ViewDropout(
-        d_model=config.hidden_dim, p_drop=config.p_drop
+        d_model=config.hidden_dim, p=config.p
     ).to(device)
 
     # DDPM scheduler
@@ -467,7 +467,7 @@ def train_stage3(
         lpips_net = create_lpips_net().to(device)
 
     # EMA
-    ema = EMAModel(noise_net, decay=config.ema_decay)
+    ema = EMA(noise_net, decay=config.ema_decay)
 
     # Load checkpoint before DDP wrapping
     start_epoch = 0
@@ -614,7 +614,7 @@ def train_stage3(
             )
 
             # EMA update
-            ema.update(_unwrap(noise_net))
+            ema.update()
 
             # LR schedule
             lr_scheduler.step()

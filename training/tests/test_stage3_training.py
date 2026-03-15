@@ -14,7 +14,7 @@ import torch
 import torch.nn as nn
 
 from models.diffusion import _DiTNoiseNet
-from models.ema import EMAModel
+from models.ema import EMA
 from models.view_dropout import ViewDropout
 from training.train_stage3 import (
     Stage3Config,
@@ -180,7 +180,7 @@ def _make_config(**kwargs):
         grad_clip=1.0,
         warmup_steps=0,
         lambda_recon=0.0,
-        p_drop=0.0,
+        p=0.0,
         ema_decay=0.999,
     )
     defaults.update(kwargs)
@@ -197,7 +197,7 @@ class TestTrainStep:
         encoder, adapter, noise_net = _make_components()
         config = _make_config()
         scheduler = create_noise_scheduler(config.train_diffusion_steps)
-        view_dropout = ViewDropout(d_model=HIDDEN_DIM, p_drop=0.0)
+        view_dropout = ViewDropout(d_model=HIDDEN_DIM, p=0.0)
 
         params = list(noise_net.parameters()) + list(adapter.parameters())
         optimizer = torch.optim.AdamW(params, lr=1e-3)
@@ -216,7 +216,7 @@ class TestTrainStep:
         encoder, adapter, noise_net = _make_components()
         config = _make_config()
         scheduler = create_noise_scheduler(config.train_diffusion_steps)
-        view_dropout = ViewDropout(d_model=HIDDEN_DIM, p_drop=0.0)
+        view_dropout = ViewDropout(d_model=HIDDEN_DIM, p=0.0)
 
         params = list(noise_net.parameters()) + list(adapter.parameters())
         optimizer = torch.optim.AdamW(params, lr=1e-3)
@@ -239,41 +239,43 @@ class TestTrainStep:
         """Average loss decreases when overfitting on a single batch.
 
         DDPM loss is noisy (random timestep each step), so we compare
-        rolling averages rather than single-step values.
+        rolling averages rather than single-step values. Use a fixed seed
+        for reproducibility and enough steps for the signal to dominate.
         """
+        torch.manual_seed(42)
         encoder, adapter, noise_net = _make_components()
         config = _make_config(lr=5e-3, lr_adapter=5e-3)
         scheduler = create_noise_scheduler(config.train_diffusion_steps)
-        view_dropout = ViewDropout(d_model=HIDDEN_DIM, p_drop=0.0)
+        view_dropout = ViewDropout(d_model=HIDDEN_DIM, p=0.0)
 
         params = list(noise_net.parameters()) + list(adapter.parameters())
-        optimizer = torch.optim.AdamW(params, lr=5e-3)
+        optimizer = torch.optim.AdamW(params, lr=5e-3, weight_decay=0.0)
 
         batch = _make_batch()
         losses_list = []
 
-        for step in range(200):
+        for step in range(300):
             losses = train_step(
                 batch, noise_net, encoder, adapter, view_dropout,
                 scheduler, optimizer, config, global_step=step,
             )
             losses_list.append(losses["policy"])
 
-        # Compare first-quarter average vs last-quarter average
+        # Compare first-third average vs last-third average
         n = len(losses_list)
-        avg_first = np.mean(losses_list[:n // 4])
-        avg_last = np.mean(losses_list[-n // 4:])
+        avg_first = np.mean(losses_list[:n // 3])
+        avg_last = np.mean(losses_list[-n // 3:])
 
         assert avg_last < avg_first, (
-            f"Loss did not decrease: first_quarter={avg_first:.4f} -> last_quarter={avg_last:.4f}"
+            f"Loss did not decrease: first_third={avg_first:.4f} -> last_third={avg_last:.4f}"
         )
 
     def test_with_view_dropout(self):
         """Training step works with view dropout enabled."""
         encoder, adapter, noise_net = _make_components()
-        config = _make_config(p_drop=0.3)
+        config = _make_config(p=0.3)
         scheduler = create_noise_scheduler(config.train_diffusion_steps)
-        view_dropout = ViewDropout(d_model=HIDDEN_DIM, p_drop=0.3)
+        view_dropout = ViewDropout(d_model=HIDDEN_DIM, p=0.3)
 
         params = list(noise_net.parameters()) + list(adapter.parameters()) + list(view_dropout.parameters())
         optimizer = torch.optim.AdamW(params, lr=1e-3)
@@ -290,7 +292,7 @@ class TestTrainStep:
         encoder, adapter, noise_net = _make_components()
         config = _make_config(grad_clip=0.1)
         scheduler = create_noise_scheduler(config.train_diffusion_steps)
-        view_dropout = ViewDropout(d_model=HIDDEN_DIM, p_drop=0.0)
+        view_dropout = ViewDropout(d_model=HIDDEN_DIM, p=0.0)
 
         params = list(noise_net.parameters()) + list(adapter.parameters())
         optimizer = torch.optim.AdamW(params, lr=1e-3)
@@ -317,7 +319,7 @@ class TestCoTraining:
         decoder = MockDecoder(in_dim=HIDDEN_DIM, n_tokens=N)
         config = _make_config(lambda_recon=0.1)
         scheduler = create_noise_scheduler(config.train_diffusion_steps)
-        view_dropout = ViewDropout(d_model=HIDDEN_DIM, p_drop=0.0)
+        view_dropout = ViewDropout(d_model=HIDDEN_DIM, p=0.0)
 
         params = (list(noise_net.parameters()) +
                   list(adapter.parameters()) +
@@ -343,7 +345,7 @@ class TestCoTraining:
         encoder, adapter, noise_net = _make_components()
         config = _make_config(lambda_recon=0.0)
         scheduler = create_noise_scheduler(config.train_diffusion_steps)
-        view_dropout = ViewDropout(d_model=HIDDEN_DIM, p_drop=0.0)
+        view_dropout = ViewDropout(d_model=HIDDEN_DIM, p=0.0)
 
         params = list(noise_net.parameters()) + list(adapter.parameters())
         optimizer = torch.optim.AdamW(params, lr=1e-3)
@@ -409,19 +411,19 @@ class TestEMAIntegration:
     def test_ema_updates_during_training(self):
         """EMA weights change after training steps."""
         _, adapter, noise_net = _make_components()
-        ema = EMAModel(noise_net, decay=0.99)
+        ema = EMA(noise_net, decay=0.99, warmup_steps=0)
 
-        old_ema = [p.clone() for p in ema.shadow_params]
+        old_shadow = {k: v.clone() for k, v in ema.shadow.items()}
 
         # Simulate a training step
         with torch.no_grad():
             for p in noise_net.parameters():
                 p.add_(torch.randn_like(p) * 0.1)
-        ema.update(noise_net)
+        ema.update()
 
         changed = False
-        for old, new in zip(old_ema, ema.shadow_params):
-            if not torch.equal(old, new):
+        for k in ema.shadow:
+            if not torch.equal(old_shadow[k], ema.shadow[k]):
                 changed = True
                 break
         assert changed, "EMA should have changed after update"
@@ -435,7 +437,7 @@ class TestCheckpoint:
     def test_save_load_roundtrip(self, tmp_path):
         """Save and load preserves model weights."""
         _, adapter, noise_net = _make_components()
-        ema = EMAModel(noise_net, decay=0.999)
+        ema = EMA(noise_net, decay=0.999)
         optimizer = torch.optim.AdamW(
             list(noise_net.parameters()) + list(adapter.parameters()), lr=1e-3
         )
@@ -447,7 +449,7 @@ class TestCheckpoint:
         _, eps = noise_net(noise_ac, time, x)
         eps.sum().backward()
         optimizer.step()
-        ema.update(noise_net)
+        ema.update()
 
         path = str(tmp_path / "ckpt.pt")
         save_checkpoint(path, epoch=5, global_step=100,
@@ -456,7 +458,7 @@ class TestCheckpoint:
 
         # Create fresh models and load
         _, adapter2, noise_net2 = _make_components()
-        ema2 = EMAModel(noise_net2, decay=0.999)
+        ema2 = EMA(noise_net2, decay=0.999)
         optimizer2 = torch.optim.AdamW(
             list(noise_net2.parameters()) + list(adapter2.parameters()), lr=1e-3
         )
@@ -473,7 +475,7 @@ class TestCheckpoint:
     def test_checkpoint_contains_ema(self, tmp_path):
         """Checkpoint includes EMA state."""
         _, adapter, noise_net = _make_components()
-        ema = EMAModel(noise_net, decay=0.999)
+        ema = EMA(noise_net, decay=0.999)
         optimizer = torch.optim.AdamW(noise_net.parameters(), lr=1e-3)
 
         path = str(tmp_path / "ckpt.pt")
@@ -482,7 +484,7 @@ class TestCheckpoint:
         ckpt = torch.load(path, weights_only=False)
         assert "ema" in ckpt
         assert "decay" in ckpt["ema"]
-        assert "shadow_params" in ckpt["ema"]
+        assert "shadow" in ckpt["ema"]
 
 
 # ============================================================
@@ -575,7 +577,7 @@ class TestGradientFlow:
         encoder, adapter, noise_net = _make_components()
         config = _make_config()
         scheduler = create_noise_scheduler(config.train_diffusion_steps)
-        view_dropout = ViewDropout(d_model=HIDDEN_DIM, p_drop=0.0)
+        view_dropout = ViewDropout(d_model=HIDDEN_DIM, p=0.0)
 
         params = list(noise_net.parameters()) + list(adapter.parameters())
         optimizer = torch.optim.AdamW(params, lr=1e-3)
@@ -595,7 +597,7 @@ class TestGradientFlow:
         encoder, adapter, noise_net = _make_components()
         config = _make_config()
         scheduler = create_noise_scheduler(config.train_diffusion_steps)
-        view_dropout = ViewDropout(d_model=HIDDEN_DIM, p_drop=0.0)
+        view_dropout = ViewDropout(d_model=HIDDEN_DIM, p=0.0)
 
         params = list(noise_net.parameters()) + list(adapter.parameters())
         optimizer = torch.optim.AdamW(params, lr=0)  # lr=0 so grads aren't zeroed
@@ -620,7 +622,7 @@ class TestGradientFlow:
         encoder, adapter, noise_net = _make_components()
         config = _make_config(lr=1e-2)
         scheduler = create_noise_scheduler(config.train_diffusion_steps)
-        view_dropout = ViewDropout(d_model=HIDDEN_DIM, p_drop=0.0)
+        view_dropout = ViewDropout(d_model=HIDDEN_DIM, p=0.0)
 
         params = list(noise_net.parameters()) + list(adapter.parameters())
         optimizer = torch.optim.AdamW(params, lr=1e-2)
@@ -644,7 +646,7 @@ class TestGradientFlow:
         clip_val = 0.01  # very tight clip
         config = _make_config(grad_clip=clip_val)
         scheduler = create_noise_scheduler(config.train_diffusion_steps)
-        view_dropout = ViewDropout(d_model=HIDDEN_DIM, p_drop=0.0)
+        view_dropout = ViewDropout(d_model=HIDDEN_DIM, p=0.0)
 
         all_params = list(noise_net.parameters()) + list(adapter.parameters())
         optimizer = torch.optim.AdamW(all_params, lr=0)  # lr=0 to keep grads
@@ -726,7 +728,7 @@ class TestFullPipeline:
         encoder, adapter, noise_net = _make_components()
         config = _make_config()
         scheduler = create_noise_scheduler(config.train_diffusion_steps)
-        view_dropout = ViewDropout(d_model=HIDDEN_DIM, p_drop=0.0)
+        view_dropout = ViewDropout(d_model=HIDDEN_DIM, p=0.0)
 
         params = list(noise_net.parameters()) + list(adapter.parameters())
         optimizer = torch.optim.AdamW(params, lr=1e-3)
@@ -747,8 +749,8 @@ class TestFullPipeline:
         encoder, adapter, noise_net = _make_components()
         config = _make_config()
         scheduler = create_noise_scheduler(config.train_diffusion_steps)
-        view_dropout = ViewDropout(d_model=HIDDEN_DIM, p_drop=0.15)
-        ema = EMAModel(noise_net, decay=0.99)
+        view_dropout = ViewDropout(d_model=HIDDEN_DIM, p=0.15)
+        ema = EMA(noise_net, decay=0.99)
 
         params = list(noise_net.parameters()) + list(adapter.parameters()) + list(view_dropout.parameters())
         optimizer = torch.optim.AdamW(params, lr=1e-3)
@@ -761,34 +763,31 @@ class TestFullPipeline:
                 batch, noise_net, encoder, adapter, view_dropout,
                 scheduler, optimizer, config, global_step=i,
             )
-            ema.update(noise_net)
+            ema.update()
             lr_sched.step()
             assert np.isfinite(losses["policy"])
 
     def test_ema_eval_inference(self):
         """EMA weights produce valid DDIM inference."""
         _, _, noise_net = _make_components()
-        ema = EMAModel(noise_net, decay=0.99)
+        ema = EMA(noise_net, decay=0.99)
 
         # Simulate some training
         with torch.no_grad():
             for p in noise_net.parameters():
                 p.add_(torch.randn_like(p) * 0.1)
-        ema.update(noise_net)
+        ema.update()
 
-        # Apply EMA and run inference
-        ema.apply_to(noise_net)
-        noise_net.eval()
+        # Apply EMA and run inference via context manager
+        with ema.averaged_model():
+            noise_net.eval()
+            scheduler = create_noise_scheduler(100)
+            obs_tokens = torch.randn(B, T_O * K * N, HIDDEN_DIM)
+            actions = ddim_inference(noise_net, obs_tokens, AC_DIM, T_P, scheduler, 5)
 
-        scheduler = create_noise_scheduler(100)
-        obs_tokens = torch.randn(B, T_O * K * N, HIDDEN_DIM)
-        actions = ddim_inference(noise_net, obs_tokens, AC_DIM, T_P, scheduler, 5)
+            assert actions.shape == (B, T_P, AC_DIM)
+            assert torch.isfinite(actions).all()
 
-        assert actions.shape == (B, T_P, AC_DIM)
-        assert torch.isfinite(actions).all()
-
-        # Restore
-        ema.restore(noise_net)
         noise_net.train()
 
     def test_ddim_different_num_steps(self):
@@ -809,7 +808,7 @@ class TestFullPipeline:
         """Checkpoint save/load includes decoder for co-training."""
         _, adapter, noise_net = _make_components()
         decoder = MockDecoder(in_dim=HIDDEN_DIM, n_tokens=N)
-        ema = EMAModel(noise_net, decay=0.999)
+        ema = EMA(noise_net, decay=0.999)
         optimizer = torch.optim.AdamW(
             list(noise_net.parameters()) + list(adapter.parameters()) +
             list(decoder.parameters()), lr=1e-3,
@@ -825,7 +824,7 @@ class TestFullPipeline:
         # Load into fresh models
         _, adapter2, noise_net2 = _make_components()
         decoder2 = MockDecoder(in_dim=HIDDEN_DIM, n_tokens=N)
-        ema2 = EMAModel(noise_net2, decay=0.999)
+        ema2 = EMA(noise_net2, decay=0.999)
         optimizer2 = torch.optim.AdamW(
             list(noise_net2.parameters()) + list(adapter2.parameters()) +
             list(decoder2.parameters()), lr=1e-3,

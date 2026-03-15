@@ -26,7 +26,7 @@ import torch
 import torch.nn as nn
 
 from models.diffusion import _DiTNoiseNet
-from models.ema import EMAModel
+from models.ema import EMA
 from models.view_dropout import ViewDropout
 from training.train_stage3 import (
     Stage3Config,
@@ -454,7 +454,7 @@ class TestCrossComponentWiring:
         """Save and load a full PolicyDiT checkpoint."""
         config = Stage3Config(T_pred=T_P, hidden_dim=D_MODEL)
         policy = PolicyDiT(config, stage1_bridge=None)
-        ema = EMAModel(policy.noise_net, decay=0.999)
+        ema = EMA(policy.noise_net, decay=0.999)
         optimizer = torch.optim.AdamW(policy.parameters(), lr=1e-3)
 
         path = str(tmp_path / "policy.pt")
