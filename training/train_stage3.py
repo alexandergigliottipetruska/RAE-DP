@@ -415,6 +415,7 @@ def train_stage3(
     )
 
     train_sampler = DistributedSampler(train_ds, shuffle=True) if distributed else None
+    persistent = config.num_workers > 0
     train_loader = DataLoader(
         train_ds,
         batch_size=config.batch_size,
@@ -423,6 +424,8 @@ def train_stage3(
         num_workers=config.num_workers,
         pin_memory=(device.type == "cuda"),
         drop_last=True,
+        persistent_workers=persistent,
+        prefetch_factor=3 if config.num_workers > 0 else None,
     )
     valid_loader = DataLoader(
         valid_ds,
@@ -430,6 +433,7 @@ def train_stage3(
         shuffle=False,
         num_workers=config.num_workers,
         pin_memory=(device.type == "cuda"),
+        persistent_workers=persistent,
     )
 
     # Optimizer with separate param groups
