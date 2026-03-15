@@ -178,13 +178,17 @@ class _FinalLayer(nn.Module):
         # cond: (B, seq_len, d) — mean-pool to (B, d) then add timestep
         cond = torch.mean(cond, dim=1) + t
         shift, scale = self.adaLN_modulation(cond).chunk(2, dim=1)
-        x = x * scale.unsqueeze(1) + shift.unsqueeze(1)
+        x = self.norm_final(x)
+        x = x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
         x = self.linear(x)
         return x   # (B, ac_chunk, ac_dim)
 
     def reset_parameters(self):
-        for p in self.parameters():
-            nn.init.zeros_(p)
+        # Zero only the modulation — so the final layer starts as identity
+        # (shift=0, scale=0 → x * 0 + 0, but linear has real weights).
+        # The linear projection keeps its default init so gradients can flow.
+        nn.init.zeros_(self.adaLN_modulation[-1].weight)
+        nn.init.zeros_(self.adaLN_modulation[-1].bias)
 
 
 class _TransformerEncoder(nn.Module):
