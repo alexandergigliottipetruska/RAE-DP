@@ -4,6 +4,9 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import torch
 import torch.nn as nn
 from types import SimpleNamespace
+from transformers import AutoModel
+from huggingface_hub import login
+import yaml
 
 """ TODO: need to create a new conda environment to fix the OpenMP error with transforners and torch"""
 
@@ -30,36 +33,44 @@ class _MockBackbone(nn.Module):
 class FrozenMultiViewEncoder(nn.Module):
     """
     Frozen DINOv3 wrapper using Hugging Face, with Cancel-Affine LayerNorm for Multi-View processing.
+    use_cache will skip the backbone assuming that we are using precomputed features
     """
-    def __init__(self, pretrained=True):
+    def __init__(self, pretrained=True, use_cache=False):
         super().__init__()
         
-        if pretrained:
-            from transformers import AutoModel
-            from huggingface_hub import login
-            import yaml
-            
-            # Load the secret things from the YAML file
-            with open("configs/secrets.yaml", "r") as file:
-                secrets = yaml.safe_load(file)
+        if not use_cache:
+            if pretrained:
                 
-            # Log in using the token
-            login(token=secrets["huggingface_token"])
-            
-            # load the DINOv3 ViT-L16 from Hugging Face
-            self.backbone = AutoModel.from_pretrained('facebook/dinov3-vitl16-pretrain-lvd1689m', trust_remote_code=True)
+                # Load the secret things from the YAML file
+                with open("configs/secrets.yaml", "r") as file:
+                    secrets = yaml.safe_load(file)
+                    
+                # Log in using the token
+                login(token=secrets["huggingface_token"])
+                
+                # load the DINOv3 ViT-L16 from Hugging Face
+                self.backbone = AutoModel.from_pretrained('facebook/dinov3-vitl16-pretrain-lvd1689m', trust_remote_code=True)
+            else:
+                self.backbone = _MockBackbone()
+
         else:
-            self.backbone = _MockBackbone()
+            self.backbone = None
+
 
         self.expected_tokens = 196
         
         # Cancel-Affine LayerNorm
         self.cancel_affine_ln = nn.LayerNorm(1024, elementwise_affine=False)
-        
-        self.freeze_all()
+        self.use_cache = use_cache
+
+        # Only freeze if there is actually a backbone to freeze
+        if self.backbone is not None:
+            self.freeze_all()
 
     def freeze_all(self):
         """Freezes the backbone parameters and sets it to eval mode."""
+        if self.backbone is None:
+            return
         for param in self.backbone.parameters():
             param.requires_grad = False
         self.backbone.eval()
@@ -67,22 +78,27 @@ class FrozenMultiViewEncoder(nn.Module):
     def train(self, mode=True):
         """Override train to ensure the backbone stays in eval mode."""
         super().train(mode)
-        self.backbone.eval()
+        if self.backbone is not None:
+            self.backbone.eval()
         return self
 
     def forward(self, x):
         """
         Args:
-            x: Input tensor of shape (B, 3, 224, 224) ImageNet-normalized images
+            x: Raw images (B, 3, 224, 224) IF use_cache=False
+               Pre-extracted tokens (B, 196, 1024) IF use_cache=True
         Returns:
             z: Normalized patch tokens of shape (B, 196, 1024)
         """
-        with torch.no_grad():
-            # forward pass through backbone
-            outputs = self.backbone(pixel_values=x)
-            
-            # Extract the patch tokens (skip CLS token and register tokens by taking only the expected number)
-            patch_tokens = outputs.last_hidden_state[:, -self.expected_tokens:, :]
+        if self.use_cache:
+            patch_tokens = x  # Assume input is already (B, 196, 1024)
+        else:
+            with torch.no_grad():
+                # forward pass through backbone
+                outputs = self.backbone(pixel_values=x)
+                
+                # Extract the patch tokens (skip CLS token and register tokens by taking only the expected number)
+                patch_tokens = outputs.last_hidden_state[:, -self.expected_tokens:, :]
             
         # Apply the cancel-affine LayerNorm per token
         z = self.cancel_affine_ln(patch_tokens)

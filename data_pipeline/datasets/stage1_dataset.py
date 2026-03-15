@@ -47,10 +47,12 @@ class Stage1Dataset(Dataset):
         split:      "train" or "valid".
     """
 
-    def __init__(self, hdf5_paths: "str | list[str]", split: str = "train"):
+    def __init__(self, hdf5_paths: "str | list[str]", split: str = "train", use_cache: bool = False):
         if isinstance(hdf5_paths, str):
             hdf5_paths = [hdf5_paths]
         self._hdf5_paths = list(hdf5_paths)
+        self.use_cache = use_cache
+        self._feat_handles = {} # Dictionary to store open feature file handles
 
         # Build flat index: one entry per (file_idx, demo_key, timestep)
         self._index = []
@@ -78,7 +80,7 @@ class Stage1Dataset(Dataset):
 
     def __getitem__(self, idx: int) -> dict:
         file_idx, demo_key, t = self._index[idx]
-
+        
         with h5py.File(self._hdf5_paths[file_idx], "r") as f:
             imgs_hwc = f[f"data/{demo_key}/images"][t]  # (K, H, W, 3)
 
@@ -91,9 +93,19 @@ class Stage1Dataset(Dataset):
         # Raw target: HWC -> CHW
         images_target = np.moveaxis(imgs_01, -1, -3)  # (K, 3, H, W)
 
-        # ImageNet-normalized: for encoder input
-        images_enc = (imgs_01 - _IMAGENET_MEAN) / _IMAGENET_STD
-        images_enc = np.moveaxis(images_enc, -1, -3)   # (K, 3, H, W)
+        if self.use_cache:
+            # Open the file handle inside __getitem__ if it's not open for this worker
+            if file_idx not in self._feat_handles:
+                feat_path = self._hdf5_paths[file_idx].replace(".hdf5", "_features.hdf5").replace(".h5", "_features.h5")
+                # Use 'swmr=True' (Single Writer Multiple Reader) for better performance on clusters
+                self._feat_handles[file_idx] = h5py.File(feat_path, "r")
+            
+            # Load pre-computed tokens
+            images_enc = self._feat_handles[file_idx][f"data/{demo_key}/dino_features"][t][:]
+        else:
+            # Traditional ImageNet-normalized: for live encoder input
+            images_enc = (imgs_01 - _IMAGENET_MEAN) / _IMAGENET_STD
+            images_enc = np.moveaxis(images_enc, -1, -3)   # (K, 3, H, W)
 
         return {
             "images_enc":    torch.from_numpy(images_enc),
