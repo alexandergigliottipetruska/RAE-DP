@@ -447,6 +447,11 @@ def train_stage3(
     )
     policy = policy.to(device)
 
+    # Performance: TF32 for matmuls (Ampere+), cuDNN autotuner
+    if device.type == "cuda":
+        torch.set_float32_matmul_precision("high")
+        torch.backends.cudnn.benchmark = True
+
     # EMA on noise net
     ema = EMA(policy.noise_net, decay=config.ema_decay)
 
@@ -476,6 +481,11 @@ def train_stage3(
             resume_from, policy.noise_net, policy.bridge.adapter,
             optimizer, ema, policy.bridge.decoder,
         )
+
+    # torch.compile for faster training
+    if device.type == "cuda" and not distributed:
+        policy = torch.compile(policy)
+        log.info("torch.compile enabled")
 
     # DDP wrapping
     if distributed:
