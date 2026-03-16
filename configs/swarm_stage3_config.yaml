@@ -1,0 +1,140 @@
+project:
+  study_name: "robotics_stage3_dit_sweep"
+  domain: "utm.utoronto.ca"
+  project_root: "/student/denassau/CSC415/Project/RAEDiTRobotics"
+  venv_path: "~/sweep_env/bin/activate"
+  git_branch: "stage3_hp-tuning"             # The specific branch the manager will pull
+  worker_script: "training/swarm_worker_stage3.py"
+  log_directory: "/tmp/swarm_logs"
+  
+  # Storage Quota Safety
+  hf_cache_dir: "/tmp/hf_cache"
+  torch_cache_dir: "/tmp/torch_cache"
+  scratch_dir: "/tmp/denassau_stage3"
+  hf_repo_id: "Denass04/RAEDiTRobotics-stage3-sweeps"
+  
+  # Optuna Pruning Settings
+  n_startup_trials: 10  
+  n_warmup_steps: 25     # Don't prune any trial before epoch 25 (warmup phase)
+  n_trials_per_worker: 5
+
+manager:
+  sshpass_path: "/usr/bin/sshpass"
+
+nodes:
+  - dh2020pc00
+  - dh2020pc01
+  - dh2020pc02
+  - dh2020pc03
+  - dh2020pc04
+  - dh2020pc05
+  - dh2020pc06
+  - dh2020pc07
+  - dh2020pc08
+  - dh2020pc09
+  - dh2020pc10
+  - dh2020pc11
+  - dh2020pc12
+  - dh2020pc13
+  - dh2020pc14
+  - dh2020pc15
+  - dh2020pc16
+  - dh2020pc17
+  - dh2020pc18
+  - dh2020pc19
+
+# ---------------------------------------------------------------------------
+# FIXED VARIABLES (Passed directly to Stage3Config)
+# ---------------------------------------------------------------------------
+training_static:
+  # UPDATE THESE PATHS to point to your actual Phase 1 weights & tokens!
+  stage1_checkpoint: "checkpoints/stage1/best.pt" 
+  hdf5_paths: 
+    - "data/complete_unified_data/lift.hdf5" # TODO: UPDATE
+    
+  # Hardware & Horizon Locks
+  batch_size: 64
+  num_workers: 4
+  norm_mode: "minmax"
+  ac_dim: 7
+  proprio_dim: 9
+  num_views: 4
+  T_obs: 2
+  T_pred: 16
+  T_act: 8
+  
+  # Policy & Diffusion Formulation (Locked to Flow Matching by default)
+  policy_type: "flow_matching"
+  train_diffusion_steps: 100
+  eval_diffusion_steps: 10
+  fm_timestep_dist: "beta"
+  fm_timestep_scale: 1000.0
+  fm_beta_a: 1.5
+  fm_beta_b: 1.0
+  fm_cutoff: 0.999
+  num_flow_steps: 10
+  
+  # Training Schedule Locks
+  num_epochs: 300
+  grad_clip: 1.0
+  warmup_steps: 1000
+  lr_schedule: "cosine"
+  use_lightning: true
+  save_every_epoch: 50     
+  eval_video_task: ""      
+
+# ---------------------------------------------------------------------------
+# DYNAMIC VARIABLES (Optuna Search Space - 9 Variables)
+# ---------------------------------------------------------------------------
+hyperparameters_search:
+  # 1. Learning Rates
+  lr:
+    method: "suggest_float"
+    kwargs:
+      low: 1.0e-5
+      high: 5.0e-4
+      log: true
+  lr_adapter:
+    method: "suggest_float"
+    kwargs:
+      low: 1.0e-6
+      high: 1.0e-4
+      log: true
+
+  # 2. DiT Architecture (Capacity vs Overfitting)
+  hidden_dim:
+    method: "suggest_categorical"
+    kwargs:
+      choices: [256, 384, 512]  # Multiples of 8 to ensure clean nhead division
+  num_blocks:
+    method: "suggest_int"
+    kwargs:
+      low: 4
+      high: 8
+  nhead:
+    method: "suggest_categorical"
+    kwargs:
+      choices: [4, 8]
+      
+  # 3. Regularization & Co-training
+  lambda_recon:
+    method: "suggest_categorical"
+    kwargs:
+      choices: [0.0, 0.1, 0.25, 0.5]  # Ablation test for reconstruction loss
+  p:  
+    method: "suggest_float"
+    kwargs:
+      low: 0.0
+      high: 0.3                   # View dropout probability
+  weight_decay:
+    method: "suggest_float"
+    kwargs:
+      low: 1.0e-5
+      high: 1.0e-3
+      log: true
+      
+  # 4. Diffusion Weights Moving Average
+  ema_decay:
+    method: "suggest_categorical"
+    kwargs:
+      choices: [0.99, 0.999, 0.9999]  # Crucial for smoothing robotic actions
