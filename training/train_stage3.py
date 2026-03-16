@@ -385,21 +385,38 @@ def train_stage3(
     # EMA on noise net
     ema = EMA(policy.noise_net, decay=config.ema_decay)
 
+    # Optimizer with separate param groups (must be created before checkpoint load)
+    param_groups = [
+        {"params": list(policy.noise_net.parameters()), "lr": config.lr},
+        {"params": list(policy.bridge.adapter.parameters()), "lr": config.lr_adapter},
+        {"params": list(policy.view_dropout.parameters()), "lr": config.lr},
+        {"params": list(policy.token_assembly.parameters()), "lr": config.lr},
+    ]
+    if policy.bridge.decoder is not None and config.lambda_recon > 0:
+        param_groups.append(
+            {"params": list(policy.bridge.decoder.parameters()), "lr": config.lr_adapter}
+        )
+
+    optimizer = torch.optim.AdamW(
+        param_groups,
+        betas=(0.9, 0.999),
+        weight_decay=config.weight_decay,
+    )
+
     # Load checkpoint before DDP wrapping
     start_epoch = 0
     global_step = 0
     if resume_from and os.path.isfile(resume_from):
-        _opt_tmp = torch.optim.AdamW(policy.parameters(), lr=config.lr)
         start_epoch, global_step = load_checkpoint(
             resume_from, policy.noise_net, policy.bridge.adapter,
-            _opt_tmp, ema, policy.bridge.decoder,
+            optimizer, ema, policy.bridge.decoder,
         )
 
     # DDP wrapping
     if distributed:
         policy = nn.parallel.DistributedDataParallel(
             policy, device_ids=[local_rank],
-            find_unused_parameters=(config.lambda_recon > 0),  # only needed when decoder is conditionally used
+            find_unused_parameters=(config.lambda_recon > 0),
         )
 
     # Dataset + DataLoader
@@ -435,29 +452,6 @@ def train_stage3(
         pin_memory=(device.type == "cuda"),
         persistent_workers=persistent,
     )
-
-    # Optimizer with separate param groups
-    policy_unwrapped = _unwrap(policy)
-    param_groups = [
-        {"params": list(policy_unwrapped.noise_net.parameters()), "lr": config.lr},
-        {"params": list(policy_unwrapped.bridge.adapter.parameters()), "lr": config.lr_adapter},
-        {"params": list(policy_unwrapped.view_dropout.parameters()), "lr": config.lr},
-        {"params": list(policy_unwrapped.token_assembly.parameters()), "lr": config.lr},
-    ]
-    if policy_unwrapped.bridge.decoder is not None and config.lambda_recon > 0:
-        param_groups.append(
-            {"params": list(policy_unwrapped.bridge.decoder.parameters()), "lr": config.lr_adapter}
-        )
-
-    optimizer = torch.optim.AdamW(
-        param_groups,
-        betas=(0.9, 0.999),
-        weight_decay=config.weight_decay,
-    )
-
-    # Reload optimizer state if resuming
-    if resume_from and os.path.isfile(resume_from) and start_epoch > 0:
-        optimizer.load_state_dict(_opt_tmp.state_dict())
 
     total_steps = config.num_epochs * len(train_loader)
     lr_scheduler = _create_lr_scheduler(optimizer, config.warmup_steps, total_steps)
@@ -546,6 +540,7 @@ def train_stage3(
                 with open(metrics_path, "a") as mf:
                     mf.write(json.dumps({
                         "epoch": epoch, "global_step": global_step,
+                        "lr": optimizer.param_groups[0]["lr"],
                         "train": avg,
                     }) + "\n")
 
