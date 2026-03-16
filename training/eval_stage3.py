@@ -90,11 +90,12 @@ def load_policy(
     policy.eval()
 
     # Load EMA if available and requested
+    # NOTE: EMA is on policy.noise_net only (not the full policy)
     ema = None
     if use_ema and "ema" in ckpt:
         log.info("Loading EMA weights (decay=%.4f, step=%d)",
                  ckpt["ema"].get("decay", 0), ckpt["ema"].get("_step", 0))
-        ema = EMA(policy, decay=ckpt["ema"].get("decay", 0.9999))
+        ema = EMA(policy.noise_net, decay=ckpt["ema"].get("decay", 0.9999))
         ema.load_state_dict(ckpt["ema"])
     elif use_ema:
         log.warning("EMA requested but not found in checkpoint — using raw weights")
