@@ -112,12 +112,12 @@ def run_episode_with_recording(
         step_count += 1
         total_reward += reward
 
-        img_buffer.append(env.get_multiview_images())
+        new_images = env.get_multiview_images()  # only call ONCE per step
+        img_buffer.append(new_images)
         proprio_buffer.append(env.get_proprio())
 
-        # Record frame every step (or every N steps to save space)
-        cur_images = env.get_multiview_images()[0]  # [K, 3, H, W]
-        cur_inet = (cur_images - _MEAN[np.newaxis]) / _STD[np.newaxis]
+        # Record frame for video (reuse same images, no second render call)
+        cur_inet = (new_images[0] - _MEAN[np.newaxis]) / _STD[np.newaxis]
         frames.append(cur_inet)
 
     success = info.get("success", False) if isinstance(info, dict) else False
