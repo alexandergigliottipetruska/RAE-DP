@@ -110,6 +110,9 @@ def evaluate_policy(
                     raw = raw * action_std + action_mean
 
                 action_queue = list(raw[:exec_horizon])
+                if ep == 0 and step_count < 16:
+                    _log.info("  step=%d action[0]: %s", step_count,
+                              np.array2string(action_queue[0], precision=4, suppress_small=True))
 
             action = action_queue.pop(0)
             obs, reward, done, info = env.step(action)
