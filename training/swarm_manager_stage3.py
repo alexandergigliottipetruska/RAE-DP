@@ -5,7 +5,6 @@ import sys
 
 def load_configs():
     """Merges base config and secrets into one dictionary."""
-    # SWITCHED TO STAGE 3 CONFIG
     base_path = os.path.join("configs", "swarm_stage3_config.yaml")
     if not os.path.exists(base_path):
         print(f"Error: Base config {base_path} not found. Exiting.")
@@ -52,25 +51,24 @@ def run_remote(cfg, node_name, domain, command, password=None, is_start_cmd=Fals
 
 
 def start_swarm(cfg, target_nodes=None):
-    domain = cfg.get('domain', '')
+    # Fixed the dictionary lookups to reference the 'project' block
+    domain = cfg['project'].get('domain', '')
     password = cfg.get('ssh_password')
     nodes_to_start = target_nodes if target_nodes is not None else cfg['nodes']
     
-    # Grab the target branch from config, default to main
-    branch = cfg.get('git_branch', 'main')
+    branch = cfg['project'].get('git_branch', 'main')
 
     print(f"Launching swarm on {len(nodes_to_start)} machines in {domain} (Branch: {branch})...")
     
-    # INJECTED GIT SYNC & UPDATED LOG NAME
     remote_cmd = (
         f"export PYTORCH_ALLOC_CONF=expandable_segments:True && "
-        f"cd {cfg['project_root']} && "
+        f"cd {cfg['project']['project_root']} && "
         f"git fetch origin && "
         f"git checkout {branch} && "
         f"git pull origin {branch} && "
-        f"source {cfg['venv_path']} && "
-        f"mkdir -p {cfg['log_directory']} && "
-        f"nohup python3 {cfg['worker_script']} > {cfg['log_directory']}/worker_$(hostname)_stage3.log 2>&1 &"
+        f"source {cfg['project']['venv_path']} && "
+        f"mkdir -p {cfg['project']['log_directory']} && "
+        f"nohup python3 {cfg['project']['worker_script']} > {cfg['project']['log_directory']}/worker_$(hostname)_stage3.log 2>&1 &"
     )
 
     for node in nodes_to_start:
@@ -80,10 +78,10 @@ def start_swarm(cfg, target_nodes=None):
 
 
 def stop_swarm(cfg):
-    domain = cfg.get('domain', '')
+    domain = cfg['project'].get('domain', '')
     password = cfg.get('ssh_password')
     print("Stopping all workers...")
-    stop_cmd = f"pkill -f {cfg['worker_script']}"
+    stop_cmd = f"pkill -f {cfg['project']['worker_script']}"
     for node in cfg['nodes']:
         print(f"  → Stopping {node}...", end=" ", flush=True)
         run_remote(cfg, node, domain, stop_cmd, password)
@@ -91,10 +89,9 @@ def stop_swarm(cfg):
 
 
 def check_status(cfg):
-    domain = cfg.get('domain', '')
+    domain = cfg['project'].get('domain', '')
     password = cfg.get('ssh_password')
-    # Defaulting to the stage 3 worker script just in case
-    worker_script = cfg.get('worker_script', 'training/swarm_worker_stage3.py')
+    worker_script = cfg['project'].get('worker_script', 'training/swarm_worker_stage3.py')
     
     print(f"\n{'NODE':<20} | {'STATUS':<10} | {'GPU USAGE'}")
     print("-" * 50)
