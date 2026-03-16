@@ -61,17 +61,20 @@ pg_ctl -D ~/optuna_pg_data -l ~/optuna_pg_data/pg.log start
 **2. Manage the Swarm (From any PC)**
 Use `swarm_manager_stage3.py` to orchestrate the lab machines. 
 
-* **Start the workers:** ```bash
+* **Start the workers:**
+```bash
 python3 training/swarm_manager_stage3.py start
 ```
-* **Check who is training:** ```bash
+* **Check who is training:**
+```bash
 python3 training/swarm_manager_stage3.py status
 ```
 * **Restart idle machines:** (Finds nodes that crashed or finished their queue and restarts them)
 ```bash
 python3 swarm_manager_stage3.py restart_idle
 ```
-* **Graceful Stop:** ```bash
+* **Graceful Stop:**
+```bash
 python3 training/swarm_manager_stage3.py stop
 ```
 
