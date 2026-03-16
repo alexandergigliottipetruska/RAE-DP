@@ -13,9 +13,13 @@ import argparse
 import logging
 import os
 import sys
+import warnings
 
 import numpy as np
 import torch
+
+# Suppress robosuite controller warnings
+warnings.filterwarnings("ignore", module="robosuite")
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
