@@ -55,6 +55,9 @@ def evaluate_policy(
         success_rate: float in [0, 1]
         per_episode_results: list of dicts with 'success', 'steps', 'reward'
     """
+    import logging
+    _log = logging.getLogger(__name__)
+
     results = []
 
     for ep in range(num_episodes):
@@ -117,11 +120,17 @@ def evaluate_policy(
             img_buffer.append(env.get_multiview_images())
             proprio_buffer.append(env.get_proprio())
 
+        success = info.get("success", False) if isinstance(info, dict) else False
         results.append({
-            "success": info.get("success", False) if isinstance(info, dict) else False,
+            "success": success,
             "steps": step_count,
             "reward": total_reward,
         })
+        n_success = sum(1 for r in results if r["success"])
+        _log.info("Episode %d/%d: %s (%d steps) | Running: %d/%d (%.0f%%)",
+                  ep + 1, num_episodes, "SUCCESS" if success else "FAIL",
+                  step_count, n_success, len(results),
+                  100 * n_success / len(results))
 
     successes = [r["success"] for r in results]
     return float(np.mean(successes)), results
