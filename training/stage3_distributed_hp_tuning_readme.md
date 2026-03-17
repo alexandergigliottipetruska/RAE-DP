@@ -29,6 +29,29 @@ python3 training/precompute_tokens.py \
 
 ---
 
+## ⚡ Step 0.5: Decompress for Speed (Optimization)
+Standard HDF5 files are compressed with GZIP, which creates a CPU bottleneck. Run this to create a "Fast" version that allows for higher `it/s` and better GPU utilization:
+
+```bash
+python3 -c "
+import h5py
+src = 'data/stage3_tokens/lift_tokens.hdf5'
+dst = 'data/stage3_decompressed_tokens/lift_tokens_fast.hdf5'
+with h5py.File(src, 'r') as s, h5py.File(dst, 'w') as d:
+    for attr in s.attrs: d.attrs[attr] = s.attrs[attr]
+    if 'mask' in s: s.copy('mask', d)
+    if 'norm_stats' in s: s.copy('norm_stats', d)
+    for key in s['data']:
+        g = d.create_group(f'data/{key}')
+        for ds in s[f'data/{key}']:
+            g.create_dataset(ds, data=s[f'data/{key}/{ds}'][:])
+print('Optimization Complete.')
+"
+```
+**Important:** Update your `swarm_stage3_config.yaml` to point to `lift_tokens_fast.hdf5`.
+
+---
+
 ## ⚙️ Step 1: Configuration
 
 **1. Database & Secrets (`configs/secrets.yaml`)**

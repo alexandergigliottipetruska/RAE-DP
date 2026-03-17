@@ -1,3 +1,4 @@
+# NOTE we no longer check out to a branch or pull automatically
 project:
   study_name: "robotics_stage3_lift_test"
   domain: "utm.utoronto.ca" #important for lab pc distribution
@@ -26,19 +27,14 @@ project:
   n_trials_per_worker: 5
 
 manager:
-  sshpass_path: "/usr/bin/sshpass"
+  sshpass_path: "/student/denassau/bin/sshpass" 
 
 nodes:
-  - dh2020pc00
-  - dh2020pc01
-  # - dh2020pc02
-  # - dh2020pc03
-  # - dh2020pc04
   # - dh2020pc05
   # - dh2020pc06
   # - dh2020pc07
-  # - dh2020pc08
-  # - dh2020pc09
+  - dh2020pc08
+  - dh2020pc09
   # - dh2020pc10
   # - dh2020pc11
   # - dh2020pc12
@@ -57,11 +53,11 @@ training_static:
   # UPDATE THESE PATHS to point to your actual Phase 1 weights & tokens!
   stage1_checkpoint: "/student/denassau/CSC415/Project/RAEDiTRobotics/data/stage1_checkpoints/epoch_024.pt" 
   hdf5_paths: # precomputed tokens
-    - "/student/denassau/CSC415/Project/RAEDiTRobotics/data/stage3_tokens/lift_tokens.hdf5"
+    - "/student/denassau/CSC415/Project/RAEDiTRobotics/data/stage3_decompressed_tokens/lift_tokens_fast.hdf5"
     
   # Hardware & Horizon Locks
-  batch_size: 64
-  num_workers: 4
+  batch_size: 42
+  num_workers: 8
   norm_mode: "minmax"
   ac_dim: 7
   proprio_dim: 9
@@ -69,6 +65,7 @@ training_static:
   T_obs: 2
   T_pred: 16
   T_act: 8
+  hidden_dim: 512
   
   # Policy & Diffusion Formulation (Locked to Flow Matching by default)
   policy_type: "flow_matching"
@@ -80,6 +77,8 @@ training_static:
   fm_beta_b: 1.0
   fm_cutoff: 0.999
   num_flow_steps: 10
+
+  lambda_recon: 0
   
   # Training Schedule Locks
   num_epochs: 300
@@ -109,10 +108,6 @@ hyperparameters_search:
       log: true
 
   # 2. DiT Architecture (Capacity vs Overfitting)
-  hidden_dim:
-    method: "suggest_categorical"
-    kwargs:
-      choices: [256, 384, 512]  # Multiples of 8 to ensure clean nhead division
   num_blocks:
     method: "suggest_int"
     kwargs:
@@ -124,10 +119,6 @@ hyperparameters_search:
       choices: [4, 8]
       
   # 3. Regularization & Co-training
-  lambda_recon:
-    method: "suggest_categorical"
-    kwargs:
-      choices: [0.0, 0.1, 0.25, 0.5]  # Ablation test for reconstruction loss
   p:  
     method: "suggest_float"
     kwargs:

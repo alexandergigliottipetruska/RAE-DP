@@ -51,21 +51,16 @@ def run_remote(cfg, node_name, domain, command, password=None, is_start_cmd=Fals
 
 
 def start_swarm(cfg, target_nodes=None):
-    # Fixed the dictionary lookups to reference the 'project' block
     domain = cfg['project'].get('domain', '')
     password = cfg.get('ssh_password')
     nodes_to_start = target_nodes if target_nodes is not None else cfg['nodes']
     
-    branch = cfg['project'].get('git_branch', 'main')
-
-    print(f"Launching swarm on {len(nodes_to_start)} machines in {domain} (Branch: {branch})...")
+    print(f"Launching swarm on {len(nodes_to_start)} machines in {domain}...")
     
+    # Git commands removed! Just CD, Source, Mkdir, and Run.
     remote_cmd = (
         f"export PYTORCH_ALLOC_CONF=expandable_segments:True && "
         f"cd {cfg['project']['project_root']} && "
-        f"git fetch origin && "
-        f"git checkout {branch} && "
-        f"git pull origin {branch} && "
         f"source {cfg['project']['venv_path']} && "
         f"mkdir -p {cfg['project']['log_directory']} && "
         f"nohup python3 {cfg['project']['worker_script']} > {cfg['project']['log_directory']}/worker_$(hostname)_stage3.log 2>&1 &"
