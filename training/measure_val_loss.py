@@ -177,6 +177,26 @@ def main():
                 loss = compute_loss_at_timestep(policy_rand, test_batch_dev, t_val)
             log.info("  timestep=%2d | loss=%.6f (random)", t_val, loss.item())
 
+    # ---- Test 4: Train vs Eval mode should match with dropout=0 ----
+    log.info("=" * 60)
+    log.info("TEST 4: Train vs Eval mode (should match if dropout=0)")
+    log.info("=" * 60)
+    for mode in ["eval", "train"]:
+        if mode == "eval":
+            policy.eval()
+        else:
+            policy.train()
+        torch.manual_seed(42)
+        test_batch2 = next(iter(train_loader))
+        test_batch2_dev = {
+            k: v.to(device) if isinstance(v, torch.Tensor) else v
+            for k, v in test_batch2.items()
+        }
+        with torch.no_grad():
+            with torch.amp.autocast(device.type, dtype=torch.bfloat16):
+                loss = policy(test_batch2_dev)
+        log.info("  [%s mode] loss=%.6f", mode, loss.item())
+
     log.info("Done.")
 
 
