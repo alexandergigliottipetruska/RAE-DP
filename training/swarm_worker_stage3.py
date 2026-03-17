@@ -124,6 +124,13 @@ def objective(trial):
 
 
 if __name__ == "__main__":
+    # This pruner only kills trials in the bottom 25th percentile
+    pruner = optuna.pruners.PercentilePruner(
+        percentile=SWARM_CFG["project"]["pruning_percentile"], 
+        n_startup_trials=SWARM_CFG["project"]["n_startup_trials"], 
+        n_warmup_steps=SWARM_CFG["project"]["n_warmup_steps"]
+    )
+
     study = optuna.create_study(
         study_name=SWARM_CFG["project"]["study_name"],
         storage=SWARM_CFG["db_url"],

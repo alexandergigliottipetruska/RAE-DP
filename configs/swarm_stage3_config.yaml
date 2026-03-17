@@ -14,16 +14,17 @@ project:
   scratch_dir: "/tmp/denassau_stage3"
   hf_repo_id: "Denass04/RAEDiTRobotics-stage3-sweeps"
 
-  # Add your eval video parameters right here!
-  eval_video_task: "lift"
-  eval_video_hdf5: "/student/denassau/CSC415/Project/RAEDiTRobotics/data/complete_unified_data/lift.hdf5"
-  eval_video_episodes: 1
-  eval_video_steps: 100
-  eval_video_dir: "/tmp/eval_videos" # Keep it in /tmp to avoid quota issues
+  # # Add your eval video parameters right here!
+  # eval_video_task: "lift"
+  # eval_video_hdf5: "/student/denassau/CSC415/Project/RAEDiTRobotics/data/complete_unified_data/lift.hdf5"
+  # eval_video_episodes: 1
+  # eval_video_steps: 100
+  # eval_video_dir: "/tmp/eval_videos" # Keep it in /tmp to avoid quota issues
   
   # Optuna Pruning Settings
-  n_startup_trials: 10  
-  n_warmup_steps: 25     # Don't prune any trial before epoch 25 (warmup phase)
+  n_startup_trials: 10
+  n_warmup_steps: 500     # Don't prune any trial before epoch 500 (warmup phase)
+  pruning_percentile: 25.0   # Prune if in the worst 25% of trials
   n_trials_per_worker: 5
 
 manager:
@@ -32,19 +33,35 @@ manager:
 nodes:
   # - dh2020pc05
   # - dh2020pc06
-  # - dh2020pc07
+  - dh2020pc07
   - dh2020pc08
   - dh2020pc09
   # - dh2020pc10
-  # - dh2020pc11
-  # - dh2020pc12
-  # - dh2020pc13
-  # - dh2020pc14
-  # - dh2020pc15
+  - dh2020pc11
+  - dh2020pc12
+  - dh2020pc13
+  - dh2020pc14
+  - dh2020pc15
   # - dh2020pc16
-  # - dh2020pc17
+  - dh2020pc17
   # - dh2020pc18
-  # - dh2020pc19
+  - dh2020pc19
+
+  # - dh2026pc05
+  - dh2026pc06
+  - dh2026pc07
+  - dh2026pc08
+  - dh2026pc09
+  - dh2026pc10
+  # - dh2026pc11
+  - dh2026pc12
+  - dh2026pc13
+  # - dh2026pc14
+  - dh2026pc15
+  - dh2026pc16
+  - dh2026pc17
+  - dh2026pc18
+  - dh2026pc19
 
 # ---------------------------------------------------------------------------
 # FIXED VARIABLES (Passed directly to Stage3Config)
@@ -57,7 +74,7 @@ training_static:
     
   # Hardware & Horizon Locks
   batch_size: 42
-  num_workers: 8
+  num_workers: 10
   norm_mode: "minmax"
   ac_dim: 7
   proprio_dim: 9
@@ -81,12 +98,12 @@ training_static:
   lambda_recon: 0
   
   # Training Schedule Locks
-  num_epochs: 300
+  num_epochs: 1000
   grad_clip: 1.0
-  warmup_steps: 1000
+  warmup_steps: 400
   lr_schedule: "cosine"
   use_lightning: true
-  save_every_epoch: 50     
+  save_every_epoch: 100     
   eval_video_task: ""      
 
 # ---------------------------------------------------------------------------
