@@ -59,6 +59,7 @@ def main():
     parser.add_argument("--batch_size", type=int, default=44)
     parser.add_argument("--norm_mode", default="minmax")
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--skip_seeded", action="store_true", help="Skip Test 1 (slow seeded loss)")
     args = parser.parse_args()
 
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
@@ -71,7 +72,7 @@ def main():
         load_decoder=False,
     )
 
-    # Create policy
+    # Create policy (p_view_drop=0 to match training and eliminate train/eval difference)
     policy = PolicyDiT(
         bridge=bridge,
         ac_dim=7,
@@ -85,6 +86,7 @@ def main():
         train_diffusion_steps=100,
         eval_diffusion_steps=10,
         policy_type=args.policy_type,
+        p_view_drop=0.0,
     )
 
     # Load checkpoint
@@ -113,26 +115,29 @@ def main():
     valid_loader = DataLoader(valid_ds, batch_size=args.batch_size, shuffle=False)
 
     # ---- Test 1: Seeded loss (reproducible) ----
-    log.info("=" * 60)
-    log.info("TEST 1: Seeded random loss (should be reproducible)")
-    log.info("=" * 60)
-    for run in range(2):
-        for name, loader in [("train", train_loader), ("valid", valid_loader)]:
-            torch.manual_seed(42)
-            total_loss = 0.0
-            n = 0
-            with torch.no_grad():
-                for batch in loader:
-                    batch_dev = {
-                        k: v.to(device) if isinstance(v, torch.Tensor) else v
-                        for k, v in batch.items()
-                    }
-                    with torch.amp.autocast(device.type, dtype=torch.bfloat16):
-                        loss = policy(batch_dev)
-                    total_loss += loss.item()
-                    n += 1
-            avg = total_loss / max(n, 1)
-            log.info("  Run %d | %s loss: %.6f", run, name, avg)
+    if args.skip_seeded:
+        log.info("Skipping Test 1 (--skip_seeded)")
+    else:
+        log.info("=" * 60)
+        log.info("TEST 1: Seeded random loss (should be reproducible)")
+        log.info("=" * 60)
+        for run in range(2):
+            for name, loader in [("train", train_loader), ("valid", valid_loader)]:
+                torch.manual_seed(42)
+                total_loss = 0.0
+                n = 0
+                with torch.no_grad():
+                    for batch in loader:
+                        batch_dev = {
+                            k: v.to(device) if isinstance(v, torch.Tensor) else v
+                            for k, v in batch.items()
+                        }
+                        with torch.amp.autocast(device.type, dtype=torch.bfloat16):
+                            loss = policy(batch_dev)
+                        total_loss += loss.item()
+                        n += 1
+                avg = total_loss / max(n, 1)
+                log.info("  Run %d | %s loss: %.6f", run, name, avg)
 
     # ---- Test 2: Per-timestep loss (first 5 train batches) ----
     log.info("=" * 60)
@@ -165,7 +170,7 @@ def main():
         bridge=bridge_rand, ac_dim=7, proprio_dim=9, hidden_dim=512,
         T_obs=2, T_pred=16, num_blocks=6, nhead=8, num_views=4,
         train_diffusion_steps=100, eval_diffusion_steps=10,
-        policy_type=args.policy_type,
+        policy_type=args.policy_type, p_view_drop=0.0,
     )
     policy_rand.to(device)
     policy_rand.eval()
