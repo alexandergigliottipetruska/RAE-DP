@@ -4,6 +4,7 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import torch
 import torch.nn as nn
 from types import SimpleNamespace
+from huggingface_hub import HfApi
 
 """ TODO: need to create a new conda environment to fix the OpenMP error with transforners and torch"""
 
@@ -44,7 +45,11 @@ class FrozenMultiViewEncoder(nn.Module):
                 secrets = yaml.safe_load(file)
                 
             # Log in using the token
-            login(token=secrets["huggingface_token"])
+            try:
+                # Only try to login if we aren't already authenticated
+                HfApi().whoami()
+            except:
+                login(token=secrets["huggingface_token"])
             
             # load the DINOv3 ViT-L16 from Hugging Face
             self.backbone = AutoModel.from_pretrained('facebook/dinov3-vitl16-pretrain-lvd1689m', trust_remote_code=True)

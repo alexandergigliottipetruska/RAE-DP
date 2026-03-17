@@ -120,7 +120,7 @@ hyperparameters_search:
   policy_type:
     method: "suggest_categorical"
     kwargs:
-      choices: ["flow_matching", "diffusion"]
+      choices: ["flow_matching", "ddpm"]
 
   # 1. Learning Rates
   lr:
