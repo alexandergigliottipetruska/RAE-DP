@@ -90,7 +90,19 @@ class RobomimicWrapper(BaseManipulationEnv):
             # In absolute mode, the controller directly assigns goal_pos and
             # goal_ori from the action — no input/output scaling is applied.
             # See robosuite/controllers/parts/arm/osc.py set_goal() lines 265-269.
-            controller_config["body_parts"]["arms"]["right"]["input_type"] = "absolute"
+            # Note: load_composite_controller_config flattens "arms" nesting,
+            # so the path is body_parts.right (not body_parts.arms.right).
+            right_cfg = controller_config["body_parts"]["right"]
+            right_cfg["input_type"] = "absolute"
+            # Actions are in world frame (extracted from controller.goal_pos
+            # in robosuite 1.2). Default "base" frame would add origin_pos
+            # offset, corrupting the target pose.
+            right_cfg["input_ref_frame"] = "world"
+            # Widen input bounds — the env clips actions to [input_min, input_max]
+            # before the controller sees them. Default [-1, 1] destroys absolute
+            # actions where positions can be ~1m and axis-angle rotations ~±π.
+            right_cfg["input_min"] = -10
+            right_cfg["input_max"] = 10
 
         self._env = suite.make(
             env_name=TASK_TO_ENV[task],
