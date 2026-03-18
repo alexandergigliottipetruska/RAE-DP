@@ -517,6 +517,7 @@ def _run_diagnostics(policy, valid_loader, config, epoch, device, use_amp, metri
             proprio_mean=proprio_stats["mean"], proprio_std=proprio_stats["std"],
             proprio_min=proprio_stats.get("min"), proprio_max=proprio_stats.get("max"),
             exec_horizon=config.T_act, obs_horizon=config.T_obs,
+            rot6d=(config.abs_action and config.ac_dim == 10),
         )
         n_success = sum(1 for r in results if r["success"])
         n_episodes = n_eval

@@ -172,6 +172,7 @@ def main():
         proprio_max=proprio_stats.get("max"),
         exec_horizon=args.exec_horizon,
         obs_horizon=2,
+        rot6d=getattr(args, 'abs_action', False),
     )
 
     # Report

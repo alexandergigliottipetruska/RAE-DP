@@ -33,6 +33,7 @@ def evaluate_policy(
     proprio_max: np.ndarray | None = None,
     exec_horizon: int = 8,
     obs_horizon: int = 2,
+    rot6d: bool = False,
 ) -> tuple[float, list[dict]]:
     """Closed-loop evaluation with receding horizon control.
 
@@ -108,6 +109,11 @@ def evaluate_policy(
                     raw = (raw + 1.0) / 2.0 * a_range + action_min
                 elif action_mean is not None and action_std is not None:
                     raw = raw * action_std + action_mean
+
+                # Convert 10D rot6d actions → 7D axis-angle for robosuite
+                if rot6d:
+                    from data_pipeline.utils.rotation import convert_actions_from_rot6d
+                    raw = convert_actions_from_rot6d(raw)
 
                 action_queue = list(raw[:exec_horizon])
                 if ep == 0 and step_count < 16:

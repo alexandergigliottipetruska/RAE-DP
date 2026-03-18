@@ -100,23 +100,33 @@ def _convert_demo(
         view_present[slot] = True
     dst_grp["view_present"][:] = view_present
 
-    # --- Actions (direct copy) ---
-    dst_grp["actions"][:] = src_grp["actions"][:].astype(np.float32)
+    # --- Actions ---
+    actions = src_grp["actions"][:].astype(np.float32)
+    if cfg.get("rot6d", False):
+        from data_pipeline.utils.rotation import convert_actions_to_rot6d
+        actions = convert_actions_to_rot6d(actions)
+    dst_grp["actions"][:] = actions
 
     # --- Proprio ---
     parts = [src_grp[f"obs/{k}"][:].astype(np.float32) for k in cfg["proprio_keys"]]
     dst_grp["proprio"][:] = np.concatenate(parts, axis=1)
 
 
-def convert_task(raw_hdf5_path: str, output_path: str, task: str = "lift") -> None:
+def convert_task(raw_hdf5_path: str, output_path: str, task: str = "lift", rot6d: bool = False) -> None:
     """Convert a single robomimic task HDF5 to unified format.
 
     Args:
         raw_hdf5_path: Path to the source robomimic image.hdf5
         output_path:   Path for the output unified HDF5
         task:          Task name string stored in metadata (e.g. "lift")
+        rot6d:         If True, convert 3D axis-angle rotation to 6D continuous
+                       representation (7D → 10D actions). Required for absolute actions.
     """
     cfg = _get_task_config(task)
+    if rot6d:
+        cfg = dict(cfg)  # copy so we don't mutate the default
+        cfg["action_dim"] = 10  # pos(3) + rot6d(6) + grip(1)
+        cfg["rot6d"] = True
     proprio_dim = cfg["proprio_dim"]
     action_dim = cfg["action_dim"]
 
