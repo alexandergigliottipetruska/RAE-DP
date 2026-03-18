@@ -56,17 +56,12 @@ def main():
     policy.to(device)
     policy.eval()
 
-    # --- 2. Set up rot6d -> axis_angle converter ---
-    from diffusion_policy.model.common.rotation_transformer import RotationTransformer
-    rot_tf = RotationTransformer('axis_angle', 'rotation_6d')
+    # --- 2. Set up rot6d -> axis_angle converter (our own, no pytorch3d needed) ---
+    from data_pipeline.utils.rotation import convert_actions_from_rot6d
 
     def undo_rot6d(action_np):
         """Convert 10D (pos3+rot6d6+grip1) -> 7D (pos3+aa3+grip1)."""
-        pos = action_np[..., :3]
-        rot6d = action_np[..., 3:9]
-        grip = action_np[..., [-1]]
-        aa = rot_tf.inverse(rot6d)
-        return np.concatenate([pos, aa, grip], axis=-1)
+        return convert_actions_from_rot6d(action_np)
 
     # --- 3. Create OUR RobomimicWrapper ---
     from data_pipeline.envs.robomimic_wrapper import RobomimicWrapper
