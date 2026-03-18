@@ -96,14 +96,15 @@ def main():
                     imgs = []
                     for o in obs_list:
                         # Flip vertically: robosuite returns bottom-up,
-                        # robomimic's EnvRobosuite flips to top-up, so we must too.
-                        # Keep as uint8 HWC — Chi's normalizer expects [0,255],
-                        # and obs_encoder handles HWC→CHW + resize + ImageNet norm.
+                        # robomimic's EnvRobosuite flips to top-up.
                         img = o[key][::-1].copy()
+                        # HWC→CHW (obs_encoder expects CHW), but keep uint8 [0,255]
+                        # — normalizer handles the value scaling.
+                        img = np.moveaxis(img, -1, 0)  # (3, H, W) uint8
                         imgs.append(img)
                     obs_dict[key] = torch.from_numpy(
-                        np.stack(imgs)  # (T_o, H, W, 3) uint8
-                    ).unsqueeze(0).to(device)  # (1, T_o, H, W, 3)
+                        np.stack(imgs)  # (T_o, 3, H, W) uint8
+                    ).unsqueeze(0).to(device)  # (1, T_o, 3, H, W)
 
                 for key in ['robot0_eef_pos', 'robot0_eef_quat', 'robot0_gripper_qpos']:
                     vals = [o[key].astype(np.float32) for o in obs_list]
