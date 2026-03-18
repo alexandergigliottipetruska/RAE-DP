@@ -211,9 +211,13 @@ def main():
 
         # Save action trajectory plot
         plot_path = output_dir / f"ep{ep:02d}_{status.lower()}_actions.png"
+        if rot6d:
+            labels = ["x", "y", "z", "rx", "ry", "rz", "grip"]
+        else:
+            labels = ["dx", "dy", "dz", "drx", "dry", "drz", "grip"]
         plot_action_trajectory(
             result["actions"],
-            action_labels=["dx", "dy", "dz", "drx", "dry", "drz", "grip"],
+            action_labels=labels,
             title=f"Episode {ep} — {status} ({result['steps']} steps)",
             output_path=plot_path,
         )
