@@ -9,6 +9,8 @@ as target EE poses (no scaling). The rot6d->axis_angle conversion should happen
 upstream in the rollout code, not here.
 """
 
+from __future__ import annotations
+
 import logging
 
 import numpy as np
