@@ -41,6 +41,8 @@ def main():
 
     # Architecture
     parser.add_argument("--ac_dim", type=int, default=7)
+    parser.add_argument("--abs_action", action="store_true",
+                        help="Use absolute EE pose actions (Chi-style) instead of deltas")
     parser.add_argument("--proprio_dim", type=int, default=9)
     parser.add_argument("--num_views", type=int, default=4)
     parser.add_argument("--T_obs", type=int, default=2)
@@ -126,6 +128,7 @@ def main():
         num_epochs=args.num_epochs,
         norm_mode=args.norm_mode,
         ac_dim=args.ac_dim,
+        abs_action=args.abs_action,
         proprio_dim=args.proprio_dim,
         num_views=args.num_views,
         T_obs=args.T_obs,

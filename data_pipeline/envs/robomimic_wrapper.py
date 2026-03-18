@@ -53,6 +53,7 @@ class RobomimicWrapper(BaseManipulationEnv):
         task: Task name (lift, can, square, tool_hang).
         image_size: Target image size (default 224).
         seed: Random seed for env reset.
+        abs_action: If True, use absolute EE pose actions instead of deltas.
     """
 
     def __init__(
@@ -60,6 +61,7 @@ class RobomimicWrapper(BaseManipulationEnv):
         task: str,
         image_size: int = 224,
         seed: int | None = None,
+        abs_action: bool = False,
     ):
         import logging
         import robosuite as suite
@@ -71,8 +73,18 @@ class RobomimicWrapper(BaseManipulationEnv):
         self._task = task
         self._image_size = image_size
         self._seed = seed
+        self._abs_action = abs_action
 
         controller_config = load_composite_controller_config(controller="BASIC")
+
+        # For absolute actions: switch controller to absolute input mode
+        # Chi et al. uses control_delta=False (robomimic API).
+        # Robosuite 1.5 uses input_type="absolute" in the composite config.
+        if abs_action:
+            for part in controller_config.get("body_parts", {}).values():
+                if part.get("type") == "OSC_POSE":
+                    part["input_type"] = "absolute"
+
         self._env = suite.make(
             env_name=TASK_TO_ENV[task],
             robots="Panda",

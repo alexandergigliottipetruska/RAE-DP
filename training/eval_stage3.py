@@ -124,6 +124,8 @@ def main():
                         help="DDIM denoising steps (Chi uses 100)")
     parser.add_argument("--no_ema", action="store_true",
                         help="Use raw weights instead of EMA")
+    parser.add_argument("--abs_action", action="store_true",
+                        help="Use absolute EE pose actions (Chi-style)")
     args = parser.parse_args()
 
     device = args.device if torch.cuda.is_available() else "cpu"
@@ -149,7 +151,8 @@ def main():
 
     # Create environment
     log.info("Creating %s environment", args.task)
-    env = RobomimicWrapper(task=args.task, seed=args.seed)
+    env = RobomimicWrapper(task=args.task, seed=args.seed,
+                           abs_action=getattr(args, 'abs_action', False))
 
     # Run evaluation
     log.info("Running %d episodes...", args.num_episodes)
