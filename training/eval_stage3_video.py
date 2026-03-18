@@ -158,6 +158,10 @@ def main():
                         help="Euler integration steps for flow matching inference")
     parser.add_argument("--no_ema", action="store_true",
                         help="Use raw weights instead of EMA")
+    parser.add_argument("--abs_action", action="store_true",
+                        help="Use absolute EE pose actions")
+    parser.add_argument("--ac_dim", type=int, default=7,
+                        help="Action dimension (7 or 10 for rot6d)")
     args = parser.parse_args()
 
     device = args.device if torch.cuda.is_available() else "cpu"
@@ -172,6 +176,7 @@ def main():
         num_flow_steps=args.num_flow_steps,
         eval_diffusion_steps=args.eval_steps,
         use_ema=not args.no_ema,
+        ac_dim=args.ac_dim,
     )
 
     wrapper = Stage3PolicyWrapper(policy, ema=ema, device=device)
@@ -183,7 +188,9 @@ def main():
 
     # Create env
     log.info("Creating %s environment", args.task)
-    env = RobomimicWrapper(task=args.task, seed=args.seed)
+    rot6d = args.abs_action and args.ac_dim == 10
+    env = RobomimicWrapper(task=args.task, seed=args.seed,
+                           abs_action=args.abs_action)
 
     # Run episodes with recording
     for ep in range(args.num_episodes):
@@ -191,6 +198,7 @@ def main():
         result = run_episode_with_recording(
             wrapper, env, args.norm_mode, action_stats, proprio_stats,
             max_steps=args.max_steps, exec_horizon=args.exec_horizon,
+            rot6d=rot6d,
         )
 
         status = "SUCCESS" if result["success"] else "FAIL"
