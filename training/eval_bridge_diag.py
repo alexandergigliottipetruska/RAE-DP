@@ -69,7 +69,8 @@ def run_episode(policy, env, device, n_obs_steps=2, n_action_steps=8, max_steps=
                 imgs = []
                 for o in obs_list:
                     img = o[key][::-1].copy()  # flip bottom-up → top-up
-                    img = np.moveaxis(img, -1, 0)  # HWC→CHW, keep uint8
+                    img = img.astype(np.float32) / 255.0  # float [0,1]
+                    img = np.moveaxis(img, -1, 0)  # HWC→CHW
                     imgs.append(img)
                 obs_dict[key] = torch.from_numpy(
                     np.stack(imgs)
