@@ -248,6 +248,9 @@ def train_v3(
             resume_from, policy, optimizer, ema_model,
         )
 
+    # Ensure EMA shadow params are on the right device (checkpoint load may put them on CPU)
+    ema_model.to(device)
+
     # torch.compile
     if device.type == "cuda" and not distributed:
         policy = torch.compile(policy)
