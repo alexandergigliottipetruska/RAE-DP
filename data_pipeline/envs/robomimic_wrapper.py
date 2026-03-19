@@ -122,7 +122,16 @@ class RobomimicWrapper(BaseManipulationEnv):
 
         self._last_obs = None
 
+    def seed(self, seed: int) -> None:
+        """Set seed for next reset. Must be called before reset()."""
+        self._seed = seed
+
     def reset(self) -> dict:
+        if self._seed is not None:
+            np.random.seed(self._seed)
+            # robosuite 1.5: seed is an attribute, not a method
+            self._env.seed = self._seed
+            self._env.rng = np.random.default_rng(self._seed)
         self._last_obs = self._env.reset()
         return self._last_obs
 
