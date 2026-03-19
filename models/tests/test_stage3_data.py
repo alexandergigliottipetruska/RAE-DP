@@ -435,3 +435,176 @@ class TestStage3DatasetEdgeCases:
         """Accepts a single string path (not just list)."""
         ds = Stage3Dataset(synthetic_hdf5, T_obs=T_O, T_pred=T_P)
         assert len(ds) > 0
+
+
+# ============================================================
+# rot6d conversion tests (V3)
+# ============================================================
+
+def _create_synthetic_hdf5_rot6d(path, num_demos=NUM_DEMOS, demo_len=DEMO_LEN):
+    """Create synthetic HDF5 with 7D absolute actions and 10D norm stats.
+
+    Actions are 7D (pos3 + axis_angle3 + grip1) with realistic ranges.
+    Norm stats are 10D (computed after rot6d conversion).
+    """
+    from data_pipeline.utils.rotation import convert_actions_to_rot6d
+
+    action_dim_stored = 7  # stored as 7D in HDF5
+    action_dim_rot6d = 10  # norm stats are 10D
+    proprio_dim = D_PROP
+
+    with h5py.File(path, "w") as f:
+        f.attrs["benchmark"] = "robomimic"
+        f.attrs["task"] = "lift"
+        f.attrs["action_dim"] = action_dim_stored
+        f.attrs["proprio_dim"] = proprio_dim
+        f.attrs["image_size"] = H
+        f.attrs["num_cam_slots"] = K
+
+        view_present = np.array([True, False, False, True], dtype=bool)
+
+        all_actions_10d = []
+        demo_keys = []
+        for i in range(num_demos):
+            key = f"demo_{i}"
+            demo_keys.append(key)
+            grp = f.create_group(f"data/{key}")
+
+            imgs = np.random.randint(0, 256, (demo_len, K, H, W, 3), dtype=np.uint8)
+            imgs[:, 1:3] = 0
+            grp.create_dataset("images", data=imgs)
+
+            # Realistic 7D abs actions: pos near workspace, rot near identity, grip ±1
+            pos = np.random.uniform(-0.5, 0.5, (demo_len, 3)).astype(np.float32)
+            rot_aa = np.random.uniform(-0.5, 0.5, (demo_len, 3)).astype(np.float32)
+            grip = np.random.choice([-1.0, 1.0], (demo_len, 1)).astype(np.float32)
+            actions_7d = np.concatenate([pos, rot_aa, grip], axis=-1)
+            grp.create_dataset("actions", data=actions_7d)
+
+            proprio = np.random.randn(demo_len, proprio_dim).astype(np.float32)
+            grp.create_dataset("proprio", data=proprio)
+            grp.create_dataset("view_present", data=view_present)
+
+            all_actions_10d.append(convert_actions_to_rot6d(actions_7d))
+
+        # Split
+        n_train = max(1, int(num_demos * 0.67))
+        mask_grp = f.create_group("mask")
+        dt = h5py.special_dtype(vlen=str)
+        mask_grp.create_dataset("train", data=demo_keys[:n_train], dtype=dt)
+        mask_grp.create_dataset("valid", data=demo_keys[n_train:], dtype=dt)
+
+        # 10D norm stats (computed from rot6d-converted actions)
+        train_actions = np.concatenate(all_actions_10d[:n_train], axis=0)
+        ns = f.create_group("norm_stats")
+
+        act_grp = ns.create_group("actions")
+        act_grp.create_dataset("mean", data=train_actions.mean(0).astype(np.float32))
+        act_grp.create_dataset("std", data=np.clip(train_actions.std(0), 1e-6, None).astype(np.float32))
+        act_grp.create_dataset("min", data=train_actions.min(0).astype(np.float32))
+        act_grp.create_dataset("max", data=train_actions.max(0).astype(np.float32))
+
+        prop_grp = ns.create_group("proprio")
+        prop_grp.create_dataset("mean", data=np.zeros(proprio_dim, dtype=np.float32))
+        prop_grp.create_dataset("std", data=np.ones(proprio_dim, dtype=np.float32))
+        prop_grp.create_dataset("min", data=-np.ones(proprio_dim, dtype=np.float32) * 2)
+        prop_grp.create_dataset("max", data=np.ones(proprio_dim, dtype=np.float32) * 2)
+
+
+@pytest.fixture
+def rot6d_hdf5(tmp_path):
+    """HDF5 with 7D abs actions and 10D norm stats for rot6d testing."""
+    path = str(tmp_path / "rot6d.hdf5")
+    _create_synthetic_hdf5_rot6d(path)
+    return path
+
+
+class TestStage3DatasetRot6d:
+    def test_getitem_returns_10d_actions(self, rot6d_hdf5):
+        """With use_rot6d=True, actions are 10D (pos3+rot6d6+grip1)."""
+        ds = Stage3Dataset(rot6d_hdf5, T_obs=T_O, T_pred=T_P, use_rot6d=True)
+        sample = ds[0]
+        assert sample["actions"].shape == (T_P, 10)
+
+    def test_without_rot6d_returns_7d(self, rot6d_hdf5):
+        """With use_rot6d=False (default), actions stay 7D."""
+        # Need 7D norm stats for this — use the standard fixture instead
+        pass  # covered by existing test_actions_shape
+
+    def test_rot6d_actions_finite(self, rot6d_hdf5):
+        """rot6d-converted actions are all finite."""
+        ds = Stage3Dataset(rot6d_hdf5, T_obs=T_O, T_pred=T_P, use_rot6d=True)
+        for i in range(min(5, len(ds))):
+            sample = ds[i]
+            assert torch.isfinite(sample["actions"]).all(), f"Non-finite actions at idx {i}"
+
+    def test_rot6d_roundtrip(self, rot6d_hdf5):
+        """Load 7D → rot6d → denorm → rot6d_to_aa matches original within tolerance."""
+        from data_pipeline.utils.rotation import convert_actions_from_rot6d
+
+        ds = Stage3Dataset(rot6d_hdf5, T_obs=T_O, T_pred=T_P, use_rot6d=True, norm_mode="minmax")
+        sample = ds[0]
+        actions_norm = sample["actions"].numpy()  # (T_P, 10) normalized
+
+        # Denormalize
+        norm = ds._norm_per_file[0]["actions"]
+        a_range = np.clip(norm["max"] - norm["min"], 1e-6, None)
+        actions_10d = (actions_norm + 1.0) / 2.0 * a_range + norm["min"]
+
+        # Convert back to 7D
+        actions_7d_recovered = convert_actions_from_rot6d(actions_10d)
+
+        # Load original 7D from HDF5
+        with h5py.File(rot6d_hdf5, "r") as f:
+            first_key = list(f["data"].keys())[0]
+            actions_7d_original = f[f"data/{first_key}/actions"][:T_P]
+
+        # Roundtrip should match within tolerance
+        np.testing.assert_allclose(
+            actions_7d_recovered, actions_7d_original, atol=1e-4,
+            err_msg="rot6d roundtrip failed"
+        )
+
+    def test_rot6d_pos_and_grip_unchanged(self, rot6d_hdf5):
+        """Position (first 3) and gripper (last 1) survive rot6d conversion."""
+        ds = Stage3Dataset(rot6d_hdf5, T_obs=T_O, T_pred=T_P, use_rot6d=True, norm_mode="minmax")
+        sample = ds[0]
+        actions_norm = sample["actions"].numpy()
+
+        # Denormalize
+        norm = ds._norm_per_file[0]["actions"]
+        a_range = np.clip(norm["max"] - norm["min"], 1e-6, None)
+        actions_10d = (actions_norm + 1.0) / 2.0 * a_range + norm["min"]
+
+        # Load original 7D
+        with h5py.File(rot6d_hdf5, "r") as f:
+            first_key = list(f["data"].keys())[0]
+            actions_7d = f[f"data/{first_key}/actions"][:T_P]
+
+        # Position (dims 0-2) should match exactly
+        np.testing.assert_allclose(actions_10d[:, :3], actions_7d[:, :3], atol=1e-5)
+        # Gripper (dim 9 in 10D = dim 6 in 7D) should match exactly
+        np.testing.assert_allclose(actions_10d[:, 9], actions_7d[:, 6], atol=1e-5)
+
+    def test_10d_norm_stats_shape(self, rot6d_hdf5):
+        """Norm stats loaded by dataset have 10 dims when use_rot6d=True."""
+        ds = Stage3Dataset(rot6d_hdf5, T_obs=T_O, T_pred=T_P, use_rot6d=True)
+        norm = ds._norm_per_file[0]["actions"]
+        assert norm["min"].shape == (10,)
+        assert norm["max"].shape == (10,)
+        assert norm["mean"].shape == (10,)
+        assert norm["std"].shape == (10,)
+
+    def test_dataloader_with_rot6d(self, rot6d_hdf5):
+        """DataLoader batching works with rot6d."""
+        ds = Stage3Dataset(rot6d_hdf5, T_obs=T_O, T_pred=T_P, use_rot6d=True)
+        loader = torch.utils.data.DataLoader(ds, batch_size=4, shuffle=False)
+        batch = next(iter(loader))
+        assert batch["actions"].shape == (4, T_P, 10)
+
+    def test_default_use_rot6d_false(self, synthetic_hdf5):
+        """Default use_rot6d=False preserves existing 7D behavior."""
+        ds = Stage3Dataset(synthetic_hdf5, T_obs=T_O, T_pred=T_P)
+        assert ds.use_rot6d is False
+        sample = ds[0]
+        assert sample["actions"].shape == (T_P, D_ACT)

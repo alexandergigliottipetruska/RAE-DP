@@ -29,6 +29,7 @@ from torch.utils.data import Dataset
 
 from data_pipeline.conversion.unified_schema import read_mask
 from data_pipeline.conversion.compute_norm_stats import load_norm_stats
+from data_pipeline.utils.rotation import convert_actions_to_rot6d
 
 # ImageNet normalization constants (RGB order)
 _IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
@@ -50,6 +51,9 @@ class Stage3Dataset(Dataset):
         T_obs:      Observation horizon (number of past frames).
         T_pred:     Prediction horizon (number of future actions).
         norm_mode:  "zscore" or "minmax" for action/proprio normalization.
+        use_rot6d:  If True, convert 7D actions (pos3+aa3+grip1) to 10D
+                    (pos3+rot6d6+grip1) in __getitem__. The norm_stats in
+                    the HDF5 must already be 10D (computed with rot6d=True).
     """
 
     def __init__(
@@ -59,6 +63,7 @@ class Stage3Dataset(Dataset):
         T_obs: int = 2,
         T_pred: int = 16,
         norm_mode: str = "minmax",
+        use_rot6d: bool = False,
     ):
         if isinstance(hdf5_paths, str):
             hdf5_paths = [hdf5_paths]
@@ -66,6 +71,7 @@ class Stage3Dataset(Dataset):
         self.T_obs = T_obs
         self.T_pred = T_pred
         self.norm_mode = norm_mode
+        self.use_rot6d = use_rot6d
 
         if norm_mode not in ("zscore", "minmax"):
             raise ValueError(f"norm_mode must be 'zscore' or 'minmax', got '{norm_mode}'")
@@ -173,6 +179,10 @@ class Stage3Dataset(Dataset):
 
             # --- Actions: frames [t, ..., t + T_pred - 1] ---
             actions_raw = grp["actions"][t : t + T_pred]  # (T_pred, D_act)
+
+        # --- Convert 7D → 10D if using rot6d representation ---
+        if self.use_rot6d:
+            actions_raw = convert_actions_to_rot6d(actions_raw)
 
         # --- Normalize actions and proprio ---
         norm = self._norm_per_file[file_idx]

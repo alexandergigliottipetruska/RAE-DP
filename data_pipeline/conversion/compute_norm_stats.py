@@ -30,12 +30,15 @@ STD_MIN = 1e-6
 RANGE_MIN = 1e-6
 
 
-def compute_and_save_norm_stats(unified_hdf5: h5py.File, train_demo_keys: list) -> dict:
+def compute_and_save_norm_stats(unified_hdf5: h5py.File, train_demo_keys: list, rot6d: bool = False) -> dict:
     """Compute per-dim mean/std/min/max from training demos and save to HDF5.
 
     Args:
         unified_hdf5:    Open h5py.File (already contains converted demo data).
         train_demo_keys: List of demo key strings that belong to the train split.
+        rot6d:           If True, convert 7D actions (pos3+aa3+grip1) to 10D
+                         (pos3+rot6d6+grip1) before computing stats.
+                         Used when training with rot6d action representation.
 
     Returns:
         dict with structure:
@@ -54,6 +57,10 @@ def compute_and_save_norm_stats(unified_hdf5: h5py.File, train_demo_keys: list) 
 
     all_actions = np.concatenate(all_actions, axis=0)  # [N_total, action_dim]
     all_proprio = np.concatenate(all_proprio, axis=0)  # [N_total, D_prop]
+
+    if rot6d:
+        from data_pipeline.utils.rotation import convert_actions_to_rot6d
+        all_actions = convert_actions_to_rot6d(all_actions)
 
     stats = {}
     for name, data in [("actions", all_actions), ("proprio", all_proprio)]:
