@@ -361,6 +361,13 @@ def train_v3(
             n_steps += 1
             global_step += 1
 
+            # Update tqdm with per-step loss
+            if is_main and hasattr(loader_iter, 'set_postfix'):
+                loader_iter.set_postfix(
+                    loss=f"{step_losses['total']:.4f}",
+                    avg=f"{epoch_losses['total'] / n_steps:.4f}",
+                )
+
         avg = {k: v / max(n_steps, 1) for k, v in epoch_losses.items()}
 
         # --- Validation ---
