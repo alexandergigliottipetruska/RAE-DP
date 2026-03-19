@@ -18,7 +18,7 @@ from training.train_stage3 import train_step
 # Constants
 B = 2
 T_O = 2
-T_P = 16
+T_P = 10  # Chi: horizon=10
 K = 4
 AC_DIM = 10
 PROPRIO_DIM = 9
@@ -86,6 +86,10 @@ class TestV3OptimizerConfig:
         assert config.d_model == 256
         assert config.n_layers == 8
         assert config.n_head == 4
+        assert config.T_pred == 10
+        assert config.pad_after == 7
+        assert config.p_drop_attn == 0.3
+        assert config.p_drop_emb == 0.0
 
 
 class TestV3TrainStep:

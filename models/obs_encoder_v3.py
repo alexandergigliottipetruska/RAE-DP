@@ -1,9 +1,10 @@
-"""V3 Observation Encoder — projects adapted tokens + proprio into conditioning sequence.
+"""V3 Observation Encoder — matches Chi's conditioning structure exactly.
 
-Replaces TokenAssembly (C.4) for V3. Key differences:
-  - Spatial average pool: 196 patches → 1 vector per view (not 196→49 spatial pool)
-  - Returns dict with 'tokens' (for transformer cross-attention) and 'global' (for U-Net FiLM)
-  - Simpler: no spatial positional embeddings (pooled away), just view + time embeddings
+Chi's approach: all camera features + proprio are concatenated into ONE flat
+vector per timestep, then projected to d_model. This produces T_o conditioning
+tokens (one per observation timestep), NOT separate tokens per view.
+
+Memory = [timestep_token, obs_t0, obs_t1] = 3 tokens for T_o=2.
 
 Input:
   adapted_tokens: (B, T_o, K, 196, adapter_dim)  from Stage1Bridge
@@ -11,8 +12,8 @@ Input:
   view_present:   (B, K) bool
 
 Output dict:
-  'tokens': (B, S_obs, d_model)   where S_obs = T_o * K + T_o
-  'global': (B, global_dim)       flattened + projected for U-Net FiLM
+  'tokens': (B, T_o, d_model)    — one token per observation timestep
+  'global': (B, d_model)         — for U-Net FiLM (optional)
 """
 
 import torch
@@ -20,10 +21,13 @@ import torch.nn as nn
 
 
 class ObservationEncoder(nn.Module):
-    """Encodes adapted visual tokens + proprio into a conditioning sequence.
+    """Encodes adapted visual tokens + proprio into conditioning tokens.
 
-    For robomimic lift (T_o=2, K=2): S_obs = 2*2 + 2 = 6 tokens.
-    For RLBench (T_o=2, K=4):       S_obs = 2*4 + 2 = 10 tokens.
+    Matches Chi's pipeline: pool each view → concat all views + proprio per
+    timestep → project to d_model. Output is T_o tokens (NOT T_o*K + T_o).
+
+    For robomimic lift (T_o=2, K=2): S_obs = 2 tokens.
+    For RLBench (T_o=2, K=4):       S_obs = 2 tokens.
     """
 
     def __init__(
@@ -40,25 +44,14 @@ class ObservationEncoder(nn.Module):
         self.T_obs = T_obs
         self.num_views = num_views
 
-        # Project pooled visual features to d_model
-        self.view_proj = nn.Linear(adapter_dim, d_model)
+        # Project concatenated [all_views + proprio] to d_model
+        # Chi: obs_encoder outputs flat vector → cond_obs_emb projects to n_emb
+        concat_dim = num_views * adapter_dim + proprio_dim
+        self.obs_proj = nn.Linear(concat_dim, d_model)
 
-        # Learned embeddings
-        self.view_emb = nn.Embedding(num_views, d_model)
-        self.time_emb = nn.Embedding(T_obs, d_model)
-
-        # Proprio projection (2-layer MLP)
-        self.proprio_proj = nn.Sequential(
-            nn.Linear(proprio_dim, d_model),
-            nn.GELU(),
-            nn.Linear(d_model, d_model),
-        )
-
-        # Global conditioning vector for U-Net FiLM (flatten + project)
-        # S_obs = T_obs * num_views + T_obs
-        max_s_obs = T_obs * num_views + T_obs
+        # Global conditioning vector for U-Net FiLM
         self.global_proj = nn.Sequential(
-            nn.Linear(max_s_obs * d_model, d_model),
+            nn.Linear(T_obs * d_model, d_model),
             nn.GELU(),
             nn.Linear(d_model, d_model),
         )
@@ -77,7 +70,7 @@ class ObservationEncoder(nn.Module):
 
         Returns:
             dict with:
-                'tokens': (B, S_obs, d_model) — for transformer cross-attention memory
+                'tokens': (B, T_o, d_model) — one conditioning token per timestep
                 'global': (B, d_model) — for U-Net FiLM conditioning
         """
         B, T_o, K = adapted_tokens.shape[:3]
@@ -89,22 +82,17 @@ class ObservationEncoder(nn.Module):
         mask = view_present[:, None, :, None].float()  # (B, 1, K, 1)
         pooled = pooled * mask
 
-        # 3. Project to d_model and add view + time embeddings
-        tokens = self.view_proj(pooled)  # (B, T_o, K, d_model)
-        tokens = tokens + self.view_emb.weight[None, None, :K, :]
-        tokens = tokens + self.time_emb.weight[None, :T_o, None, :]
+        # 3. Flatten views per timestep: (B, T_o, K*adapter_dim)
+        pooled_flat = pooled.reshape(B, T_o, K * self.adapter_dim)
 
-        # 4. Flatten to sequence: (B, T_o * K, d_model)
-        tokens = tokens.reshape(B, T_o * K, self.d_model)
+        # 4. Concatenate proprio: (B, T_o, K*adapter_dim + proprio_dim)
+        obs_concat = torch.cat([pooled_flat, proprio], dim=-1)
 
-        # 5. Proprio tokens
-        proprio_tok = self.proprio_proj(proprio)  # (B, T_o, d_model)
+        # 5. Project to d_model: (B, T_o, d_model)
+        obs_tokens = self.obs_proj(obs_concat)
 
-        # 6. Concatenate: view tokens + proprio tokens
-        obs_tokens = torch.cat([tokens, proprio_tok], dim=1)  # (B, T_o*K + T_o, d_model)
-
-        # 7. Global conditioning vector (for U-Net option)
-        global_vec = self.global_proj(obs_tokens.reshape(B, -1))  # (B, d_model)
+        # 6. Global conditioning vector (for U-Net option)
+        global_vec = self.global_proj(obs_tokens.reshape(B, -1))
 
         return {
             "tokens": obs_tokens,

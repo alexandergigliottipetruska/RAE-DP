@@ -54,6 +54,10 @@ class Stage3Dataset(Dataset):
         use_rot6d:  If True, convert 7D actions (pos3+aa3+grip1) to 10D
                     (pos3+rot6d6+grip1) in __getitem__. The norm_stats in
                     the HDF5 must already be 10D (computed with rot6d=True).
+        pad_after:  Number of timesteps to pad at the end of each demo by
+                    repeating the last action. Chi uses pad_after=7 with
+                    horizon=10, allowing almost every timestep to be a
+                    valid sample start. Default 0 = no padding (trim).
     """
 
     def __init__(
@@ -64,6 +68,7 @@ class Stage3Dataset(Dataset):
         T_pred: int = 16,
         norm_mode: str = "minmax",
         use_rot6d: bool = False,
+        pad_after: int = 0,
     ):
         if isinstance(hdf5_paths, str):
             hdf5_paths = [hdf5_paths]
@@ -72,6 +77,7 @@ class Stage3Dataset(Dataset):
         self.T_pred = T_pred
         self.norm_mode = norm_mode
         self.use_rot6d = use_rot6d
+        self.pad_after = pad_after
 
         if norm_mode not in ("zscore", "minmax"):
             raise ValueError(f"norm_mode must be 'zscore' or 'minmax', got '{norm_mode}'")
@@ -112,10 +118,9 @@ class Stage3Dataset(Dataset):
 
                 for key in demo_keys:
                     T = f[f"data/{key}/actions"].shape[0]
-                    # Valid range: t in [0, T - T_pred)
-                    # At timestep t, actions are [t, ..., t + T_pred - 1]
-                    # Need t + T_pred <= T, so t <= T - T_pred - 1
-                    n_valid = max(0, T - T_pred)
+                    # Valid range: t in [0, T - T_pred + pad_after)
+                    # With pad_after, actions beyond T are padded by repeating last action
+                    n_valid = max(0, T - T_pred + pad_after)
                     for t in range(n_valid):
                         self._index.append((file_idx, key, t))
 
@@ -178,7 +183,17 @@ class Stage3Dataset(Dataset):
                     imgs_raw = imgs_slice
 
             # --- Actions: frames [t, ..., t + T_pred - 1] ---
-            actions_raw = grp["actions"][t : t + T_pred]  # (T_pred, D_act)
+            T_demo = grp["actions"].shape[0]
+            end = min(t + T_pred, T_demo)
+            actions_raw = grp["actions"][t : end]  # (<=T_pred, D_act)
+
+            # Pad with last action if beyond demo end (pad_after)
+            if actions_raw.shape[0] < T_pred:
+                pad_len = T_pred - actions_raw.shape[0]
+                actions_raw = np.concatenate(
+                    [actions_raw, np.repeat(actions_raw[-1:], pad_len, axis=0)],
+                    axis=0,
+                )
 
         # --- Convert 7D → 10D if using rot6d representation ---
         if self.use_rot6d:

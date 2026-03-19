@@ -13,7 +13,7 @@ from models.stage1_bridge import Stage1Bridge
 # Constants
 B = 2
 T_O = 2
-T_P = 16
+T_P = 10  # Chi: horizon=10
 K = 4
 H = W = 224
 AC_DIM = 10
@@ -31,7 +31,7 @@ def _make_policy(**kwargs):
         ac_dim=AC_DIM, proprio_dim=PROPRIO_DIM, d_model=D_MODEL,
         n_head=4, n_layers=2, T_obs=T_O, T_pred=T_P, num_views=K,
         train_diffusion_steps=100, eval_diffusion_steps=10,
-        p_drop_emb=0.0, p_drop_attn=0.0,
+        p_drop_emb=0.0, p_drop_attn=0.3,
     )
     defaults.update(kwargs)
     bridge = _make_bridge()

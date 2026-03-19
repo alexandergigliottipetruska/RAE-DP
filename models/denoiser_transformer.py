@@ -61,8 +61,8 @@ class TransformerDenoiser(nn.Module):
         n_layers: int = 8,
         T_pred: int = 16,
         cond_dim: int = 256,
-        p_drop_emb: float = 0.01,
-        p_drop_attn: float = 0.01,
+        p_drop_emb: float = 0.0,
+        p_drop_attn: float = 0.3,
         causal_attn: bool = True,
     ):
         super().__init__()

@@ -54,8 +54,9 @@ class V3Config:
     proprio_dim: int = 9
     num_views: int = 4
     T_obs: int = 2
-    T_pred: int = 16
+    T_pred: int = 10            # Chi: horizon=10 (was 16)
     T_act: int = 8              # execution horizon (eval only)
+    pad_after: int = 7          # Chi: pad_after=7 (repeat last action at demo end)
     d_model: int = 256          # Chi: 256
     n_head: int = 4             # Chi: 4
     n_layers: int = 8           # Chi: 8
@@ -74,9 +75,9 @@ class V3Config:
     warmup_steps: int = 500             # Chi: 1000 (we use 500 for smaller dataset)
     lr_schedule: str = "cosine"
 
-    # Dropout
-    p_drop_emb: float = 0.01
-    p_drop_attn: float = 0.01
+    # Dropout (Chi: p_drop_attn=0.3, p_drop_emb=0.0 — verified from config)
+    p_drop_emb: float = 0.0
+    p_drop_attn: float = 0.3
 
     # EMA — diffusers adaptive schedule
     ema_power: float = 0.75             # Chi: power=0.75 (adaptive decay)
@@ -267,11 +268,13 @@ def train_v3(
         config.hdf5_paths, split="train",
         T_obs=config.T_obs, T_pred=config.T_pred,
         norm_mode=config.norm_mode, use_rot6d=config.use_rot6d,
+        pad_after=config.pad_after,
     )
     valid_ds = Stage3Dataset(
         config.hdf5_paths, split="valid",
         T_obs=config.T_obs, T_pred=config.T_pred,
         norm_mode=config.norm_mode, use_rot6d=config.use_rot6d,
+        pad_after=config.pad_after,
     )
 
     train_sampler = DistributedSampler(train_ds, shuffle=True) if distributed else None
