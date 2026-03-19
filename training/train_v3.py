@@ -515,7 +515,7 @@ def _run_v3_eval(policy, ema_model, config, epoch, device) -> float:
         policy=pu,
         norm_stats=norm_stats,
         num_episodes=config.eval_episodes,
-        n_envs=4,
+        n_envs=2,
         task=config.eval_task,
         image_size=config.eval_image_size,
         device=str(device),

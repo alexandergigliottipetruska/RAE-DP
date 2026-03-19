@@ -113,6 +113,9 @@ def _run_episodes(
     from data_pipeline.utils.rotation import convert_actions_from_rot6d
 
     def env_fn():
+        import os
+        # Force EGL rendering in subprocesses (no display needed)
+        os.environ["MUJOCO_GL"] = "egl"
         env = RobomimicGymWrapper(task=task, abs_action=True, image_size=image_size)
         env = MultiStepWrapper(
             env,
