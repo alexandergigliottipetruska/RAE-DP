@@ -41,8 +41,9 @@ def main():
     parser.add_argument("--n_head", type=int, default=4)
     parser.add_argument("--n_layers", type=int, default=8)
     parser.add_argument("--T_obs", type=int, default=2)
-    parser.add_argument("--T_pred", type=int, default=16)
+    parser.add_argument("--T_pred", type=int, default=10)
     parser.add_argument("--T_act", type=int, default=8)
+    parser.add_argument("--pad_after", type=int, default=7)
     parser.add_argument("--num_views", type=int, default=4)
     parser.add_argument("--n_active_cams", type=int, default=2,
                         help="Active cameras (2 for robomimic, 4 for RLBench)")
@@ -56,6 +57,10 @@ def main():
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--no_rot6d", action="store_true",
                         help="Disable rot6d conversion (for RLBench 8D actions)")
+    parser.add_argument("--weight_decay_denoiser", type=float, default=1e-3)
+    parser.add_argument("--weight_decay_encoder", type=float, default=1e-6)
+    parser.add_argument("--p_drop_attn", type=float, default=0.3)
+    parser.add_argument("--p_drop_emb", type=float, default=0.0)
 
     # Diffusion
     parser.add_argument("--train_diffusion_steps", type=int, default=100)
@@ -116,6 +121,7 @@ def main():
         T_obs=args.T_obs,
         T_pred=args.T_pred,
         T_act=args.T_act,
+        pad_after=args.pad_after,
         num_views=args.num_views,
         n_active_cams=args.n_active_cams,
         train_diffusion_steps=args.train_diffusion_steps,
@@ -124,6 +130,10 @@ def main():
         num_epochs=args.num_epochs,
         warmup_steps=args.warmup_steps,
         grad_clip=args.grad_clip,
+        weight_decay_denoiser=args.weight_decay_denoiser,
+        weight_decay_encoder=args.weight_decay_encoder,
+        p_drop_attn=args.p_drop_attn,
+        p_drop_emb=args.p_drop_emb,
         save_dir=args.save_dir,
         save_every_epoch=args.save_every_epoch,
         eval_every_epoch=args.eval_every_epoch,
