@@ -110,13 +110,15 @@ def save_v3_checkpoint(
     ema_model,
     val_metrics: dict,
 ):
-    """Save V3 checkpoint with full policy state."""
+    """Save V3 checkpoint — trainable components only (skip frozen encoder)."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     pu = _unwrap(policy)
     ckpt = {
         "epoch": epoch,
         "global_step": global_step,
-        "policy": pu.state_dict(),
+        "denoiser": pu.denoiser.state_dict(),
+        "obs_encoder": pu.obs_encoder.state_dict(),
+        "adapter": pu.bridge.adapter.state_dict(),
         "optimizer": optimizer.state_dict(),
         "val_metrics": val_metrics,
     }
@@ -141,7 +143,14 @@ def load_v3_checkpoint(
             return {k.removeprefix(prefix): v for k, v in sd.items()}
         return sd
 
-    policy.load_state_dict(_strip(ckpt["policy"]))
+    # Load trainable components (backward-compat with old full-policy checkpoints)
+    if "denoiser" in ckpt:
+        policy.denoiser.load_state_dict(_strip(ckpt["denoiser"]))
+        policy.obs_encoder.load_state_dict(_strip(ckpt["obs_encoder"]))
+        policy.bridge.adapter.load_state_dict(_strip(ckpt["adapter"]))
+    else:
+        # Old format: full policy state dict
+        policy.load_state_dict(_strip(ckpt["policy"]))
     optimizer.load_state_dict(ckpt["optimizer"])
 
     if ema_model is not None and "ema" in ckpt:
