@@ -73,7 +73,7 @@ class V3Config:
     weight_decay_encoder: float = 1e-6   # Chi: obs_encoder_weight_decay
     num_epochs: int = 100
     grad_clip: float = 1.0
-    warmup_steps: int = 500             # Chi: 1000 (we use 500 for smaller dataset)
+    warmup_steps: int = 1000            # Chi: 1000
     lr_schedule: str = "cosine"
 
     # Dropout (Chi: p_drop_attn=0.3, p_drop_emb=0.0 — verified from config)
@@ -95,6 +95,7 @@ class V3Config:
     eval_hdf5: str = ""                 # unified HDF5 for norm stats
     eval_episodes: int = 50
     eval_image_size: int = 84
+    eval_mode: str = "custom"           # "custom" = our RobomimicWrapper, "robomimic" = Chi's pipeline
 
     # Val split override (0 = use HDF5 mask, >0 = random split like Chi)
     val_ratio: float = 0.0              # Chi uses 0.02 (4 val demos, seed=42)
@@ -607,23 +608,34 @@ def _run_per_timestep_diagnostic(
 def _run_v3_eval(policy, ema_model, config, epoch, device) -> float:
     """Run V3 rollout evaluation during training. Returns success rate."""
     from data_pipeline.conversion.compute_norm_stats import load_norm_stats
-    from training.eval_v3 import V3PolicyWrapper, evaluate_v3
 
     pu = _unwrap(policy)
     pu.eval()
-
-    wrapper = V3PolicyWrapper(pu, ema_model=ema_model, device=str(device))
     norm_stats = load_norm_stats(config.eval_hdf5)
 
-    success_rate, results = evaluate_v3(
-        wrapper, norm_stats,
-        num_episodes=config.eval_episodes,
-        task=config.eval_task,
-        image_size=config.eval_image_size,
-        use_rot6d=config.use_rot6d,
-    )
+    if config.eval_mode == "robomimic":
+        from training.eval_v3_robomimic import evaluate_v3_robomimic
+        success_rate, results = evaluate_v3_robomimic(
+            policy=pu, ema_model=ema_model,
+            hdf5_path=config.eval_hdf5,
+            norm_stats=norm_stats,
+            num_episodes=config.eval_episodes,
+            use_rot6d=config.use_rot6d,
+            device=str(device),
+        )
+        n_success = sum(1 for r in results.values() if r["success"])
+    else:
+        from training.eval_v3 import V3PolicyWrapper, evaluate_v3
+        wrapper = V3PolicyWrapper(pu, ema_model=ema_model, device=str(device))
+        success_rate, results = evaluate_v3(
+            wrapper, norm_stats,
+            num_episodes=config.eval_episodes,
+            task=config.eval_task,
+            image_size=config.eval_image_size,
+            use_rot6d=config.use_rot6d,
+        )
+        n_success = sum(1 for r in results if r["success"])
 
-    n_success = sum(1 for r in results if r["success"])
     log.info("Eval epoch %d: %d/%d (%.1f%%)",
-             epoch, n_success, len(results), success_rate * 100)
+             epoch, n_success, config.eval_episodes, success_rate * 100)
     return success_rate

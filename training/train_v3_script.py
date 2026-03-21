@@ -72,6 +72,9 @@ def main():
                         help="HDF5 for eval norm stats (defaults to first --hdf5)")
     parser.add_argument("--eval_episodes", type=int, default=50)
     parser.add_argument("--eval_every_epoch", type=int, default=5)
+    parser.add_argument("--eval_mode", type=str, default="custom",
+                        choices=["custom", "robomimic"],
+                        help="'custom'=our RobomimicWrapper, 'robomimic'=Chi's pipeline")
 
     # Val split override (Chi uses val_ratio=0.02)
     parser.add_argument("--val_ratio", type=float, default=0.0,
@@ -140,6 +143,7 @@ def main():
         eval_task=args.eval_task,
         eval_hdf5=args.eval_hdf5 or args.hdf5[0],
         eval_episodes=args.eval_episodes,
+        eval_mode=args.eval_mode,
         val_ratio=args.val_ratio,
         val_seed=args.val_seed,
     )

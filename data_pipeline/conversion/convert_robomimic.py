@@ -160,6 +160,13 @@ def convert_task(raw_hdf5_path: str, output_path: str, task: str = "lift", rot6d
         print(f"  Output:  {output_path}")
 
         with create_unified_hdf5(str(output_path), "robomimic", task, proprio_dim, action_dim) as dst:
+            # Copy env_args from source (needed for robomimic eval infrastructure)
+            if "data" in src and "env_args" in src["data"].attrs:
+                dst["data"].attrs["env_args"] = src["data"].attrs["env_args"]
+                print(f"  env_args: copied from source")
+            else:
+                print(f"  env_args: NOT found in source (robomimic eval may not work)")
+
             for i, demo_key in enumerate(all_keys):
                 src_grp = src[f"data/{demo_key}"]
                 T = src_grp["actions"].shape[0]
