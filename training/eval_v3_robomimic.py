@@ -254,9 +254,7 @@ def evaluate_v3_robomimic(
 
             # Convert rot6d → axis_angle if needed
             if use_rot6d:
-                actions_7d = convert_actions_from_rot6d(
-                    torch.from_numpy(actions_raw).float()
-                ).numpy()  # (T_pred, 7)
+                actions_7d = convert_actions_from_rot6d(actions_raw)  # (T_pred, 7)
             else:
                 actions_7d = actions_raw
 
