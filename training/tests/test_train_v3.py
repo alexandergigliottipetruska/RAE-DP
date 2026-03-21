@@ -256,15 +256,13 @@ class TestV3GradientFlow:
             [p for p in policy.parameters() if p.requires_grad], lr=1e-2
         )
 
-        old_w = [p.data.clone() for p in policy.obs_encoder.parameters()]
+        # ObservationEncoder is passthrough — check denoiser.cond_obs_emb (obs projection)
+        old_w = policy.denoiser.cond_obs_emb.weight.data.clone()
         batch = _make_batch()
         train_step(batch, policy, optimizer, config, global_step=0)
 
-        changed = any(
-            not torch.equal(old, p.data)
-            for old, p in zip(old_w, policy.obs_encoder.parameters())
-        )
-        assert changed, "ObservationEncoder weights should change"
+        changed = not torch.equal(old_w, policy.denoiser.cond_obs_emb.weight.data)
+        assert changed, "Denoiser cond_obs_emb weights should change (obs projection)"
 
 
 class TestV3DDIMInference:

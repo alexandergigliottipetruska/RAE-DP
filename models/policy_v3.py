@@ -82,13 +82,15 @@ class PolicyDiTv3(nn.Module):
         )
 
         # Transformer denoiser: cross-attention to obs conditioning
+        # cond_dim = obs_encoder.output_dim (1033 for robomimic)
+        # This matches Chi: cond_obs_emb is Linear(1033, 256) — single projection
         self.denoiser = TransformerDenoiser(
             ac_dim=ac_dim,
             d_model=d_model,
             n_head=n_head,
             n_layers=n_layers,
             T_pred=T_pred,
-            cond_dim=d_model,
+            cond_dim=self.obs_encoder.output_dim,
             p_drop_emb=p_drop_emb,
             p_drop_attn=p_drop_attn,
             causal_attn=True,

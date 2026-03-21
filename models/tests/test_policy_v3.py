@@ -160,11 +160,13 @@ class TestPolicyV3Gradients:
         batch = _make_batch(cached=True)
         loss = policy.compute_loss(batch)
         loss.backward()
-        has_grad = any(
-            p.grad is not None and not torch.all(p.grad == 0)
-            for p in policy.obs_encoder.parameters()
+        # ObservationEncoder is now passthrough (no learnable params in token path).
+        # The projection is in denoiser.cond_obs_emb (Linear(1033, 256)).
+        has_grad = (
+            policy.denoiser.cond_obs_emb.weight.grad is not None
+            and not torch.all(policy.denoiser.cond_obs_emb.weight.grad == 0)
         )
-        assert has_grad, "ObservationEncoder should receive gradients"
+        assert has_grad, "Denoiser cond_obs_emb should receive gradients (obs projection)"
 
 
 class TestPolicyV3Modes:
