@@ -121,6 +121,8 @@ def evaluate_v3_robomimic(
     shape_meta: dict = None,
     use_rot6d: bool = True,
     device: str = "cuda",
+    save_video: bool = False,
+    video_dir: str = "",
 ) -> tuple:
     """Run V3 evaluation using robomimic's infrastructure.
 
@@ -144,6 +146,8 @@ def evaluate_v3_robomimic(
         shape_meta:    Obs/action shape metadata. Defaults to Lift.
         use_rot6d:     If True, convert 10D rot6d → 7D axis-angle.
         device:        CUDA device.
+        save_video:    If True, save MP4 videos of rollouts.
+        video_dir:     Directory for video files. Required if save_video=True.
 
     Returns:
         (success_rate, per_episode_results)
@@ -165,6 +169,16 @@ def evaluate_v3_robomimic(
         max_steps=max_steps,
     )
 
+    # Video setup
+    if save_video:
+        import os
+        os.makedirs(video_dir, exist_ok=True)
+        try:
+            import imageio
+        except ImportError:
+            log.warning("imageio not installed, disabling video recording")
+            save_video = False
+
     # Norm stats for action denormalization
     action_min = norm_stats["actions"]["min"]
     action_max = norm_stats["actions"]["max"]
@@ -181,6 +195,7 @@ def evaluate_v3_robomimic(
 
         done = False
         episode_rewards = []
+        frames = []  # for video recording
 
         while not done:
             # obs from MultiStepWrapper + RobomimicImageWrapper:
@@ -265,8 +280,22 @@ def evaluate_v3_robomimic(
             obs, reward, done, info = env.step(exec_actions)
             episode_rewards.append(reward)
 
+            # Capture frame for video (last agentview from obs stack)
+            if save_video:
+                frame = obs['agentview_image'][-1]  # (H, W, C) uint8
+                if frame.dtype != np.uint8:
+                    frame = (np.clip(frame, 0, 1) * 255).astype(np.uint8)
+                frames.append(frame)
+
         max_reward = np.max(episode_rewards) if episode_rewards else 0.0
         success = max_reward > 0.5  # robomimic Lift: reward=1.0 on success
+
+        # Save video
+        if save_video and frames:
+            tag = "success" if success else "fail"
+            video_path = os.path.join(video_dir, f"ep{ep_idx:03d}_seed{seed}_{tag}.mp4")
+            imageio.mimwrite(video_path, frames, fps=10)
+
         results[ep_idx] = {
             "seed": seed,
             "success": bool(success),
