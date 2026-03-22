@@ -177,6 +177,12 @@ def evaluate_v3_robomimic(
     policy.to(device)
     policy.eval()
 
+    # Flush GPU state before creating env (prevents CUDA/EGL context interference)
+    import torch as _torch
+    if _torch.cuda.is_available():
+        _torch.cuda.synchronize()
+        _torch.cuda.empty_cache()
+
     # Create env
     env = create_robomimic_env(
         hdf5_path=hdf5_path,
@@ -186,6 +192,11 @@ def evaluate_v3_robomimic(
         n_action_steps=n_action_steps,
         max_steps=max_steps,
     )
+
+    # Warmup render to initialize OpenGL context before real eval
+    obs = env.reset()
+    env.step(np.zeros((n_action_steps, 7)))
+    env.reset()
 
     # Video setup
     if save_video:
@@ -214,8 +225,10 @@ def evaluate_v3_robomimic(
         done = False
         episode_rewards = []
         frames = []  # for video recording
+        ep_crashed = False
 
         while not done:
+          try:
             # obs from MultiStepWrapper + RobomimicImageWrapper:
             #   'agentview_image': (n_obs_steps, H, W, C) uint8 [0,255] HWC
             #   'robot0_eye_in_hand_image': (n_obs_steps, H, W, C) uint8 HWC
@@ -313,6 +326,10 @@ def evaluate_v3_robomimic(
                 if frame.dtype != np.uint8:
                     frame = (np.clip(frame, 0, 1) * 255).astype(np.uint8)
                 frames.append(frame)
+          except Exception as e:
+            log.warning("Eval episode %d (seed %d) crashed at step: %s", ep_idx, seed, e)
+            ep_crashed = True
+            break
 
         max_reward = np.max(episode_rewards) if episode_rewards else 0.0
         success = max_reward > 0.5  # robomimic Lift: reward=1.0 on success
