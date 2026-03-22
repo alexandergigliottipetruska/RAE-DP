@@ -80,8 +80,8 @@ class Stage3Dataset(Dataset):
         self.use_rot6d = use_rot6d
         self.pad_after = pad_after
 
-        if norm_mode not in ("zscore", "minmax"):
-            raise ValueError(f"norm_mode must be 'zscore' or 'minmax', got '{norm_mode}'")
+        if norm_mode not in ("zscore", "minmax", "chi"):
+            raise ValueError(f"norm_mode must be 'zscore', 'minmax', or 'chi', got '{norm_mode}'")
 
         # Build flat index and load norm stats per file
         self._index = []  # list of (file_idx, demo_key, t)
@@ -248,8 +248,8 @@ class Stage3Dataset(Dataset):
         return self._normalize(x, stats)
 
     def _normalize(self, x: np.ndarray, stats: dict) -> np.ndarray:
-        """Normalize using zscore or minmax."""
-        if self.norm_mode == "minmax":
+        """Normalize using zscore or minmax. Chi mode uses minmax for non-action fields."""
+        if self.norm_mode in ("minmax", "chi"):
             a_range = np.clip(stats["max"] - stats["min"], 1e-6, None)
             return 2.0 * (x - stats["min"]) / a_range - 1.0
         else:
