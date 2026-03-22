@@ -463,7 +463,7 @@ def train_v3(
                     epoch, global_step, policy, optimizer, ema_model, avg,
                 )
 
-            # Per-timestep diagnostics (t0, denoised-MSE)
+            # Per-timestep diagnostics + quick eval every eval_every_epoch
             if (epoch + 1) % config.eval_every_epoch == 0:
                 try:
                     _run_per_timestep_diagnostic(
@@ -473,7 +473,32 @@ def train_v3(
                 except Exception as e:
                     log.warning("Per-timestep diagnostic failed at epoch %d: %s", epoch, e)
 
-            # Rollout eval (less frequent, with video)
+                # Quick eval (no video) — skip if full eval runs this epoch
+                is_full_eval_epoch = (epoch + 1) % config.eval_full_every_epoch == 0
+                if not is_full_eval_epoch and config.eval_task and config.eval_hdf5:
+                    try:
+                        sr = _run_v3_eval(policy, ema_model, config, epoch, device,
+                                          num_episodes=config.eval_episodes, save_video=False)
+                        if metrics_path:
+                            with open(metrics_path, "a") as mf:
+                                mf.write(json.dumps({
+                                    "epoch": epoch,
+                                    "eval_success_rate": sr,
+                                    "eval_episodes": config.eval_episodes,
+                                    "eval_full": False,
+                                }) + "\n")
+                        if sr > best_success_rate:
+                            best_success_rate = sr
+                            save_v3_checkpoint(
+                                os.path.join(config.save_dir, "best_success.pt"),
+                                epoch, global_step, policy, optimizer, ema_model,
+                                {**avg, "success_rate": sr},
+                            )
+                            log.info("New best success rate: %.1f%% (epoch %d)", sr * 100, epoch)
+                    except Exception as e:
+                        log.warning("Eval failed at epoch %d: %s", epoch, e)
+
+            # Full eval (with video) every eval_full_every_epoch
             if (epoch + 1) % config.eval_full_every_epoch == 0:
                 if config.eval_task and config.eval_hdf5:
                     try:
