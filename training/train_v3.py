@@ -419,7 +419,7 @@ def train_v3(
                 batch, policy, optimizer, config, global_step, use_amp=use_amp,
             )
 
-            ema_model.step(policy)
+            ema_model.step(_unwrap(policy))
             lr_scheduler.step()
 
             for k, v in step_losses.items():
