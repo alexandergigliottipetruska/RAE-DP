@@ -340,8 +340,7 @@ def train_v3(
     )
 
     train_sampler = DistributedSampler(train_ds, shuffle=True) if distributed else None
-    # With preload_to_ram, fewer workers needed (no I/O). Use 2 for CPU/GPU overlap.
-    n_workers = min(2, config.num_workers) if config.preload_to_ram else config.num_workers
+    n_workers = config.num_workers
     persistent = n_workers > 0
     train_loader = DataLoader(
         train_ds, batch_size=config.batch_size,
