@@ -84,7 +84,7 @@ class TestDenoiserShapes:
         net = _make_denoiser()
         noisy, ts, cond = _make_inputs()
         # Trace through forward manually
-        time_token = net.time_mlp(net.time_emb(ts)).unsqueeze(1)
+        time_token = net.time_emb(ts).unsqueeze(1)
         cond_obs = net.cond_obs_emb(cond["tokens"])
         memory = torch.cat([time_token, cond_obs], dim=1)
         assert memory.shape == (B, 1 + S_OBS, D_MODEL)

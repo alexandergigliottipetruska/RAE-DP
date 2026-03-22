@@ -75,13 +75,8 @@ class TransformerDenoiser(nn.Module):
         self.input_emb = nn.Linear(ac_dim, d_model)
         self.pos_emb = nn.Parameter(torch.zeros(1, T_pred, d_model))
 
-        # --- Timestep embedding ---
+        # --- Timestep embedding (Chi: raw sinusoidal, no MLP) ---
         self.time_emb = SinusoidalPosEmb(d_model)
-        self.time_mlp = nn.Sequential(
-            nn.Linear(d_model, d_model),
-            nn.Mish(),
-            nn.Linear(d_model, d_model),
-        )
 
         # --- Conditioning obs embedding ---
         self.cond_obs_emb = nn.Linear(cond_dim, d_model)
@@ -170,7 +165,7 @@ class TransformerDenoiser(nn.Module):
         elif timestep.dim() == 0:
             timestep = timestep[None]
         timestep = timestep.expand(B)
-        time_token = self.time_mlp(self.time_emb(timestep)).unsqueeze(1)  # (B, 1, d_model)
+        time_token = self.time_emb(timestep).unsqueeze(1)  # (B, 1, d_model)
 
         # 2. Obs conditioning → project to d_model
         cond_obs = self.cond_obs_emb(obs_tokens)  # (B, S_obs, d_model)
