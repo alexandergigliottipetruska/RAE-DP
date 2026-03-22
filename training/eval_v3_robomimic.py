@@ -404,6 +404,10 @@ def _create_env_fn(hdf5_path, shape_meta, abs_action, n_obs_steps,
             render_offscreen=render_offscreen,
             use_image_obs=render_offscreen,
         )
+        # Disable hard_reset: we use reset_to() with cached states, so
+        # hard_reset is bypassed anyway. Setting False avoids robosuite
+        # allocating new sims without freeing old ones (VRAM leak).
+        robomimic_env.env.hard_reset = False
 
         return MultiStepWrapper(
             RobomimicImageWrapper(
