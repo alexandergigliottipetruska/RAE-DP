@@ -12,6 +12,7 @@ import sys
 from enum import Enum
 from copy import deepcopy
 
+import gym
 from gym import logger
 from gym.vector.vector_env import VectorEnv
 from gym.error import (
@@ -31,6 +32,23 @@ from gym.vector.utils import (
 )
 
 __all__ = ["AsyncVectorEnv"]
+
+
+def _dict_concatenate(obs_list, out, space):
+    """Concatenate list of dict observations into batched dict arrays.
+
+    Handles Dict spaces that gym's built-in concatenate fails on with
+    OrderedDict/tuple type mismatches.
+    """
+    if isinstance(space, gym.spaces.Dict):
+        if out is None:
+            out = {}
+        for key in space.spaces:
+            arrays = [obs[key] for obs in obs_list]
+            out[key] = np.stack(arrays, axis=0)
+        return out
+    else:
+        return concatenate(obs_list, out, space)
 
 
 class AsyncState(Enum):
@@ -230,7 +248,7 @@ class AsyncVectorEnv(VectorEnv):
         self._state = AsyncState.DEFAULT
 
         if not self.shared_memory:
-            self.observations = concatenate(
+            self.observations = _dict_concatenate(
                 results, self.observations, self.single_observation_space
             )
 
@@ -293,7 +311,7 @@ class AsyncVectorEnv(VectorEnv):
         observations_list, rewards, dones, infos = zip(*results)
 
         if not self.shared_memory:
-            self.observations = concatenate(
+            self.observations = _dict_concatenate(
                 observations_list, self.observations, self.single_observation_space
             )
 

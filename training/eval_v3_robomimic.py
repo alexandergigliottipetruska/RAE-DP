@@ -685,6 +685,7 @@ if __name__ == "__main__":
     parser.add_argument("--norm_mode", default="minmax", choices=["minmax", "chi"])
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--sequential", action="store_true", help="Use sequential eval (no AsyncVectorEnv)")
+    parser.add_argument("--T_pred", type=int, default=10, help="Prediction horizon (must match checkpoint)")
     args = parser.parse_args()
 
     from data_pipeline.conversion.compute_norm_stats import load_norm_stats
@@ -694,7 +695,7 @@ if __name__ == "__main__":
     # Load model
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     bridge = Stage1Bridge(checkpoint_path=args.stage1_checkpoint)
-    policy = PolicyDiTv3(bridge=bridge).to(device)
+    policy = PolicyDiTv3(bridge=bridge, T_pred=args.T_pred).to(device)
 
     # Load checkpoint
     ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
