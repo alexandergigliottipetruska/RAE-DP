@@ -126,7 +126,7 @@ class Stage3Dataset(Dataset):
                     # pad_after allows sampling near end by repeating last action
                     min_start = -self.pad_before
                     max_start = T - T_pred + self.pad_after
-                    for t in range(min_start, max_start):
+                    for t in range(min_start, max_start + 1):
                         self._index.append((file_idx, key, t))
 
                 # Cache view_present per file
