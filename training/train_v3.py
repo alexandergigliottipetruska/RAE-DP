@@ -340,17 +340,19 @@ def train_v3(
     )
 
     train_sampler = DistributedSampler(train_ds, shuffle=True) if distributed else None
-    persistent = config.num_workers > 0
+    # When data is pre-loaded to RAM, use num_workers=0 (no fork overhead, no shared memory issues)
+    n_workers = 0 if config.preload_to_ram else config.num_workers
+    persistent = n_workers > 0
     train_loader = DataLoader(
         train_ds, batch_size=config.batch_size,
         shuffle=(train_sampler is None), sampler=train_sampler,
-        num_workers=config.num_workers, pin_memory=(device.type == "cuda"),
+        num_workers=n_workers, pin_memory=(device.type == "cuda"),
         drop_last=True, persistent_workers=persistent,
-        prefetch_factor=3 if config.num_workers > 0 else None,
+        prefetch_factor=3 if n_workers > 0 else None,
     )
     valid_loader = DataLoader(
         valid_ds, batch_size=config.batch_size, shuffle=False,
-        num_workers=config.num_workers, pin_memory=(device.type == "cuda"),
+        num_workers=n_workers, pin_memory=(device.type == "cuda"),
         persistent_workers=persistent,
     )
 
