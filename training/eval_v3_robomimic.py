@@ -476,6 +476,7 @@ def evaluate_v3_robomimic_parallel(
     env = AsyncVectorEnv(
         [env_fn] * n_envs,
         dummy_env_fn=dummy_env_fn,
+        shared_memory=False,
     )
 
     # Video setup
