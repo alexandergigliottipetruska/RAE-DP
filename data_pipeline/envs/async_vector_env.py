@@ -204,6 +204,11 @@ class AsyncVectorEnv(VectorEnv):
         _, successes = zip(*[pipe.recv() for pipe in self.parent_pipes])
         self._raise_if_errors(successes)
 
+    def reset(self, **kwargs):
+        """Override base reset to avoid passing seed/options kwargs."""
+        self.reset_async()
+        return self.reset_wait()
+
     def reset_async(self):
         self._assert_is_running()
         if self._state != AsyncState.DEFAULT:
