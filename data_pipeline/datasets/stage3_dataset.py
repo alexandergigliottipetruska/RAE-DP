@@ -245,12 +245,12 @@ class Stage3Dataset(Dataset):
             )[:T_pred]
 
         # Pad with last action if beyond demo end (pad_after)
-            if actions_raw.shape[0] < T_pred:
-                pad_len = T_pred - actions_raw.shape[0]
-                actions_raw = np.concatenate(
-                    [actions_raw, np.repeat(actions_raw[-1:], pad_len, axis=0)],
-                    axis=0,
-                )
+        if actions_raw.shape[0] < T_pred:
+            pad_len = T_pred - actions_raw.shape[0]
+            actions_raw = np.concatenate(
+                [actions_raw, np.repeat(actions_raw[-1:], pad_len, axis=0)],
+                axis=0,
+            )
 
         # --- Convert 7D → 10D if using rot6d representation ---
         if self.use_rot6d:
