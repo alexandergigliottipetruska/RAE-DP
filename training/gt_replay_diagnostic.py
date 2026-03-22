@@ -21,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import h5py
 import numpy as np
+from tqdm import tqdm
 
 warnings.filterwarnings("ignore", module="robosuite")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -355,36 +356,56 @@ def main():
 
         return demo_idx, demo_key, step_a, step_b, step_c, ee_diff, traj_a, traj_b
 
-    # Submit all demos to thread pool, each assigned a worker round-robin
-    completed = 0
-    with ThreadPoolExecutor(max_workers=n_workers) as executor:
-        futures = {}
-        for i in range(len(demo_data)):
-            worker_id = i % n_workers
-            fut = executor.submit(run_single_demo, worker_id, i)
-            futures[fut] = i
+    # Split demos into contiguous chunks — each worker processes its chunk sequentially.
+    # This avoids race conditions (no two threads touch the same env).
+    import threading
+    chunk_size = (len(demo_data) + n_workers - 1) // n_workers
+    chunks = []
+    for w in range(n_workers):
+        start = w * chunk_size
+        end = min(start + chunk_size, len(demo_data))
+        if start < end:
+            chunks.append((w, list(range(start, end))))
+
+    pbar = tqdm(total=len(demo_data), desc="GT replay", unit="demo")
+    lock = threading.Lock()
+
+    def run_chunk(worker_id, demo_indices):
+        chunk_results = []
+        for demo_idx in demo_indices:
+            result = run_single_demo(worker_id, demo_idx)
+            _, demo_key, step_a, step_b, step_c, ee_diff, traj_a, traj_b = result
+
+            with lock:
+                status = f"A={'OK' if step_a>=0 else 'X'}({step_a}) B={'OK' if step_b>=0 else 'X'}({step_b})"
+                if step_c is not None:
+                    status += f" C={'OK' if step_c>=0 else 'X'}({step_c})"
+                pbar.set_postfix_str(f"{demo_key}: {status} diff={ee_diff:.1f}mm")
+                pbar.update(1)
+
+            chunk_results.append(result)
+        return chunk_results
+
+    with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
+        futures = [executor.submit(run_chunk, w, indices) for w, indices in chunks]
 
         for fut in as_completed(futures):
-            _, demo_key, step_a, step_b, step_c, ee_diff, traj_a, traj_b = fut.result()
+            for result in fut.result():
+                _, demo_key, step_a, step_b, step_c, ee_diff, traj_a, traj_b = result
 
-            results[demo_key] = {
-                'custom': {"success": step_a >= 0, "first_success_step": step_a},
-                'robomimic_denorm': {"success": step_b >= 0, "first_success_step": step_b},
-            }
-            if step_c is not None:
-                results[demo_key]['robomimic_normalized'] = {
-                    "success": step_c >= 0, "first_success_step": step_c,
+                results[demo_key] = {
+                    'custom': {"success": step_a >= 0, "first_success_step": step_a},
+                    'robomimic_denorm': {"success": step_b >= 0, "first_success_step": step_b},
                 }
+                if step_c is not None:
+                    results[demo_key]['robomimic_normalized'] = {
+                        "success": step_c >= 0, "first_success_step": step_c,
+                    }
 
-            completed += 1
-            status = f"A={'OK' if step_a>=0 else 'X'}({step_a}) B={'OK' if step_b>=0 else 'X'}({step_b})"
-            if step_c is not None:
-                status += f" C={'OK' if step_c>=0 else 'X'}({step_c})"
-            status += f" diff={ee_diff:.1f}mm"
-            log.info("[%d/%d] %s: %s", completed, len(demo_data), demo_key, status)
+                if not args.skip_plots:
+                    plot_comparison(traj_a, traj_b, demo_key, args.output_dir)
 
-            if not args.skip_plots:
-                plot_comparison(traj_a, traj_b, demo_key, args.output_dir)
+    pbar.close()
 
     # Cleanup worker envs
     for we in worker_envs:

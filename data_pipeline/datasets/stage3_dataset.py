@@ -202,7 +202,7 @@ class Stage3Dataset(Dataset):
 
         # --- Normalize actions and proprio ---
         norm = self._norm_per_file[file_idx]
-        actions = self._normalize(actions_raw, norm["actions"])
+        actions = self._normalize_actions(actions_raw, norm["actions"])
         proprio = self._normalize(proprio_raw, norm["proprio"])
 
         result = {
@@ -234,6 +234,18 @@ class Stage3Dataset(Dataset):
             result["images_target"] = torch.from_numpy(images_target)
 
         return result
+
+    def _normalize_actions(self, x: np.ndarray, stats: dict) -> np.ndarray:
+        """Normalize actions. In 'chi' mode, only position dims get minmax."""
+        if self.norm_mode == "chi":
+            # Chi's approach: position [0:3] = minmax [-1,1], rest = identity
+            result = x.copy()
+            pos_min = stats["min"][:3]
+            pos_max = stats["max"][:3]
+            pos_range = np.clip(pos_max - pos_min, 1e-6, None)
+            result[..., :3] = 2.0 * (x[..., :3] - pos_min) / pos_range - 1.0
+            return result
+        return self._normalize(x, stats)
 
     def _normalize(self, x: np.ndarray, stats: dict) -> np.ndarray:
         """Normalize using zscore or minmax."""

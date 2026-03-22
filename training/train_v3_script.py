@@ -76,6 +76,11 @@ def main():
                         choices=["custom", "robomimic"],
                         help="'custom'=our RobomimicWrapper, 'robomimic'=Chi's pipeline")
 
+    # Normalization mode
+    parser.add_argument("--norm_mode", type=str, default="minmax",
+                        choices=["minmax", "zscore", "chi"],
+                        help="'minmax'=all dims [-1,1], 'chi'=pos minmax + rot6d/grip identity")
+
     # Val split override (Chi uses val_ratio=0.02)
     parser.add_argument("--val_ratio", type=float, default=0.0,
                         help="Random val split ratio (0=use HDF5 mask, 0.02=Chi's split)")
@@ -115,6 +120,7 @@ def main():
         hdf5_paths=args.hdf5,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
+        norm_mode=args.norm_mode,
         use_rot6d=not args.no_rot6d,
         ac_dim=args.ac_dim,
         proprio_dim=args.proprio_dim,

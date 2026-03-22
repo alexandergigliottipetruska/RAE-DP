@@ -626,6 +626,7 @@ def _run_v3_eval(policy, ema_model, config, epoch, device) -> float:
             device=str(device),
             save_video=True,
             video_dir=video_dir,
+            norm_mode=config.norm_mode,
         )
         n_success = sum(1 for r in results.values() if r["success"])
     else:

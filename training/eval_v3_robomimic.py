@@ -140,6 +140,7 @@ def evaluate_v3_robomimic(
     device: str = "cuda",
     save_video: bool = False,
     video_dir: str = "",
+    norm_mode: str = "minmax",
 ) -> tuple:
     """Run V3 evaluation using robomimic's infrastructure.
 
@@ -279,10 +280,19 @@ def evaluate_v3_robomimic(
             # actions_norm: (1, T_pred, 10) normalized [-1, 1]
             actions_norm = actions_norm[0].cpu().numpy()  # (T_pred, 10)
 
-            # Denormalize actions (minmax)
-            a_range = action_max - action_min
-            a_range = np.where(np.abs(a_range) < 1e-6, 1.0, a_range)
-            actions_raw = (actions_norm + 1.0) / 2.0 * a_range + action_min  # (T_pred, 10)
+            # Denormalize actions
+            if norm_mode == "chi":
+                # Chi: only position [0:3] was minmax-normalized, rest is identity
+                actions_raw = actions_norm.copy()
+                pos_min = action_min[:3]
+                pos_max = action_max[:3]
+                pos_range = np.clip(pos_max - pos_min, 1e-6, None)
+                actions_raw[..., :3] = (actions_norm[..., :3] + 1.0) / 2.0 * pos_range + pos_min
+            else:
+                # Standard minmax denorm on all dims
+                a_range = action_max - action_min
+                a_range = np.where(np.abs(a_range) < 1e-6, 1.0, a_range)
+                actions_raw = (actions_norm + 1.0) / 2.0 * a_range + action_min  # (T_pred, 10)
 
             # Convert rot6d → axis_angle if needed
             if use_rot6d:
