@@ -186,15 +186,15 @@ class Stage3Dataset(Dataset):
             demo = self._ram_cache[file_idx][demo_key]
             obs_start = max(0, t - T_obs + 1)
             obs_end = max(0, t) + 1
-            proprio_slice = demo["proprio"][obs_start:obs_end]
+            proprio_slice = demo["proprio"][obs_start:obs_end].copy()
             if is_cached:
-                tokens_slice = demo["tokens"][obs_start:obs_end]
+                tokens_slice = demo["tokens"][obs_start:obs_end].copy()
             else:
-                imgs_slice = demo["images"][obs_start:obs_end]
+                imgs_slice = demo["images"][obs_start:obs_end].copy()
             T_demo = demo["actions"].shape[0]
             act_start = max(0, t)
             end = min(t + T_pred, T_demo)
-            actions_raw = demo["actions"][act_start:end]
+            actions_raw = demo["actions"][act_start:end].copy()
         else:
             f = h5py.File(self._hdf5_paths[file_idx], "r")
             grp = f[f"data/{demo_key}"]
