@@ -686,6 +686,8 @@ if __name__ == "__main__":
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--sequential", action="store_true", help="Use sequential eval (no AsyncVectorEnv)")
     parser.add_argument("--T_pred", type=int, default=10, help="Prediction horizon (must match checkpoint)")
+    parser.add_argument("--save_video", action="store_true", help="Save MP4 videos of rollouts")
+    parser.add_argument("--video_dir", default="checkpoints/eval_videos", help="Directory for video files")
     args = parser.parse_args()
 
     from data_pipeline.conversion.compute_norm_stats import load_norm_stats
@@ -718,6 +720,8 @@ if __name__ == "__main__":
             num_episodes=args.num_episodes,
             use_rot6d=True, device=str(device),
             norm_mode=args.norm_mode,
+            save_video=args.save_video,
+            video_dir=args.video_dir,
         )
     else:
         success_rate, results = evaluate_v3_robomimic_parallel(
@@ -726,6 +730,8 @@ if __name__ == "__main__":
             num_episodes=args.num_episodes, n_envs=args.n_envs,
             use_rot6d=True, device=str(device),
             norm_mode=args.norm_mode,
+            save_video=args.save_video,
+            video_dir=args.video_dir,
         )
 
     print(f"\nFinal: {success_rate*100:.1f}% ({int(success_rate*args.num_episodes)}/{args.num_episodes})")
