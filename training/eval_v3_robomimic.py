@@ -258,12 +258,19 @@ def evaluate_v3_robomimic(
                 obs['robot0_gripper_qpos'],
             ], axis=-1)  # (T_obs, 9)
 
-            # Normalize proprio (minmax)
+            # Normalize proprio
             proprio_min = norm_stats["proprio"]["min"]
             proprio_max = norm_stats["proprio"]["max"]
             p_range = proprio_max - proprio_min
             p_range = np.where(p_range < 1e-6, 1.0, p_range)
-            proprio_norm = 2.0 * (proprio - proprio_min) / p_range - 1.0
+            if norm_mode == "chi":
+                # Chi: pos=minmax, quat=identity, grip=minmax
+                proprio_norm = proprio.copy()
+                proprio_norm[..., :3] = 2.0 * (proprio[..., :3] - proprio_min[:3]) / np.clip(p_range[:3], 1e-6, None) - 1.0
+                # quat [3:7] — identity
+                proprio_norm[..., 7:9] = 2.0 * (proprio[..., 7:9] - proprio_min[7:9]) / np.clip(p_range[7:9], 1e-6, None) - 1.0
+            else:
+                proprio_norm = 2.0 * (proprio - proprio_min) / p_range - 1.0
 
             view_present = np.array([True, False, False, True])  # agentview + eye_in_hand
 
@@ -574,8 +581,15 @@ def evaluate_v3_robomimic_parallel(
                     obs['robot0_gripper_qpos'],
                 ], axis=-1)  # (B, T_obs, 9)
 
-                # Normalize proprio (minmax)
-                proprio_norm = 2.0 * (proprio - proprio_min) / p_range - 1.0
+                # Normalize proprio
+                if norm_mode == "chi":
+                    # Chi: pos=minmax, quat=identity, grip=minmax
+                    proprio_norm = proprio.copy()
+                    proprio_norm[..., :3] = 2.0 * (proprio[..., :3] - proprio_min[:3]) / np.clip(p_range[:3], 1e-6, None) - 1.0
+                    # quat [3:7] — identity
+                    proprio_norm[..., 7:9] = 2.0 * (proprio[..., 7:9] - proprio_min[7:9]) / np.clip(p_range[7:9], 1e-6, None) - 1.0
+                else:
+                    proprio_norm = 2.0 * (proprio - proprio_min) / p_range - 1.0
 
                 view_present = np.array([True, False, False, True])
                 view_present_batch = np.tile(view_present, (B, 1))

@@ -245,7 +245,7 @@ class Stage3Dataset(Dataset):
         # --- Normalize actions and proprio ---
         norm = self._norm_per_file[file_idx]
         actions = self._normalize_actions(actions_raw, norm["actions"])
-        proprio = self._normalize(proprio_raw, norm["proprio"])
+        proprio = self._normalize_proprio(proprio_raw, norm["proprio"])
 
         result = {
             "actions":      torch.from_numpy(actions.astype(np.float32)),
@@ -286,6 +286,22 @@ class Stage3Dataset(Dataset):
             pos_max = stats["max"][:3]
             pos_range = np.clip(pos_max - pos_min, 1e-6, None)
             result[..., :3] = 2.0 * (x[..., :3] - pos_min) / pos_range - 1.0
+            return result
+        return self._normalize(x, stats)
+
+    def _normalize_proprio(self, x: np.ndarray, stats: dict) -> np.ndarray:
+        """Normalize proprio. In 'chi' mode: pos+grip minmax, quat identity."""
+        if self.norm_mode == "chi":
+            result = x.copy()
+            # pos [0:3] — minmax [-1, 1]
+            pos_min, pos_max = stats["min"][:3], stats["max"][:3]
+            pos_range = np.clip(pos_max - pos_min, 1e-6, None)
+            result[..., :3] = 2.0 * (x[..., :3] - pos_min) / pos_range - 1.0
+            # quat [3:7] — identity (no normalization)
+            # grip [7:9] — minmax [-1, 1]
+            grip_min, grip_max = stats["min"][7:9], stats["max"][7:9]
+            grip_range = np.clip(grip_max - grip_min, 1e-6, None)
+            result[..., 7:9] = 2.0 * (x[..., 7:9] - grip_min) / grip_range - 1.0
             return result
         return self._normalize(x, stats)
 
