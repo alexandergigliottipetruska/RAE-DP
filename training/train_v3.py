@@ -404,6 +404,7 @@ def train_v3(
                  config.lr, config.betas, config.weight_decay_denoiser, config.weight_decay_encoder)
         log.info("EMA: power=%.2f, Diffusion: %d train / %d eval steps",
                  config.ema_power, config.train_diffusion_steps, config.eval_diffusion_steps)
+        log.info("Precision: AMP=%s, compile=%s", not config.no_amp, not config.no_compile)
         log.info("=" * 60)
 
     # --- Training loop ---
