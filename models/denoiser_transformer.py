@@ -142,6 +142,55 @@ class TransformerDenoiser(nn.Module):
             nn.init.zeros_(module.bias)
             nn.init.ones_(module.weight)
 
+    def get_optim_groups(self, weight_decay: float = 1e-3):
+        """Split parameters into decay/no_decay groups (Chi's pattern).
+
+        Decay: weight params of Linear and MultiheadAttention.
+        No decay: biases, LayerNorm weights+biases, positional embeddings.
+        """
+        decay = set()
+        no_decay = set()
+        whitelist_weight_modules = (nn.Linear, nn.MultiheadAttention)
+        blacklist_weight_modules = (nn.LayerNorm, nn.Embedding)
+
+        for mn, m in self.named_modules():
+            for pn, p in m.named_parameters():
+                fpn = f"{mn}.{pn}" if mn else pn
+
+                if pn.endswith("bias"):
+                    no_decay.add(fpn)
+                elif pn.startswith("bias"):
+                    # MultiheadAttention bias starts with "bias"
+                    no_decay.add(fpn)
+                elif pn.endswith("weight") and isinstance(m, whitelist_weight_modules):
+                    decay.add(fpn)
+                elif pn.endswith("weight") and isinstance(m, blacklist_weight_modules):
+                    no_decay.add(fpn)
+
+        # Positional embeddings should not be decayed
+        no_decay.add("pos_emb")
+        no_decay.add("cond_pos_emb")
+
+        # Validate every parameter is accounted for
+        param_dict = {pn: p for pn, p in self.named_parameters()}
+        inter_params = decay & no_decay
+        union_params = decay | no_decay
+        assert len(inter_params) == 0, \
+            f"parameters {inter_params} in both decay/no_decay sets"
+        assert len(param_dict.keys() - union_params) == 0, \
+            f"parameters {param_dict.keys() - union_params} not in either set"
+
+        return [
+            {
+                "params": [param_dict[pn] for pn in sorted(decay)],
+                "weight_decay": weight_decay,
+            },
+            {
+                "params": [param_dict[pn] for pn in sorted(no_decay)],
+                "weight_decay": 0.0,
+            },
+        ]
+
     def forward(
         self,
         noisy_actions: torch.Tensor,

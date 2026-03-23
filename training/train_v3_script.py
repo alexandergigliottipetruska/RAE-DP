@@ -55,8 +55,10 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--num_epochs", type=int, default=3000)
     parser.add_argument("--warmup_steps", type=int, default=1000)
-    parser.add_argument("--grad_clip", type=float, default=1.0)
-    parser.add_argument("--num_workers", type=int, default=6)
+    parser.add_argument("--grad_clip", type=float, default=0.0,
+                        help="Gradient clipping (0=disabled, matching Chi)")
+    parser.add_argument("--num_workers", type=int, default=4,
+                        help="DataLoader workers (profiled: 4 optimal)")
     parser.add_argument("--no_rot6d", action="store_true",
                         help="Disable rot6d conversion (for RLBench 8D actions)")
     parser.add_argument("--weight_decay_denoiser", type=float, default=1e-3)

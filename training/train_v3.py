@@ -73,7 +73,7 @@ class V3Config:
     weight_decay_denoiser: float = 1e-3  # Chi: transformer_weight_decay
     weight_decay_encoder: float = 1e-6   # Chi: obs_encoder_weight_decay
     num_epochs: int = 100
-    grad_clip: float = 1.0
+    grad_clip: float = 0.0              # Chi: no gradient clipping
     warmup_steps: int = 1000            # Chi: 1000
     lr_schedule: str = "cosine"
 
@@ -254,12 +254,12 @@ def train_v3(
     )
 
     # --- Optimizer: Chi's transformer recipe ---
-    # Three param groups with different weight decay
-    param_groups = [
-        {
-            "params": list(policy.denoiser.parameters()),
-            "weight_decay": config.weight_decay_denoiser,
-        },
+    # Denoiser: Chi's get_optim_groups splits into decay/no_decay
+    # (biases, LayerNorm, pos_emb get WD=0; Linear/MHA weights get WD=1e-3)
+    denoiser_groups = policy.denoiser.get_optim_groups(
+        weight_decay=config.weight_decay_denoiser,
+    )
+    param_groups = denoiser_groups + [
         {
             "params": list(policy.obs_encoder.parameters()),
             "weight_decay": config.weight_decay_encoder,
