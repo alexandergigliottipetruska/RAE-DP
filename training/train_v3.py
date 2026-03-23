@@ -105,6 +105,10 @@ class V3Config:
     val_ratio: float = 0.0              # Chi uses 0.02 (4 val demos, seed=42)
     val_seed: int = 42                  # seed for random val split
 
+    # Precision — Chi runs fp32, no torch.compile
+    no_amp: bool = False                # disable BF16 autocast
+    no_compile: bool = False            # disable torch.compile
+
 
 # ---------------------------------------------------------------------------
 # V3 Checkpointing
@@ -212,7 +216,7 @@ def train_v3(
     else:
         device = torch.device(device)
 
-    use_amp = (device.type == "cuda")
+    use_amp = (device.type == "cuda") and not config.no_amp
 
     # --- Create PolicyDiTv3 ---
     bridge = Stage1Bridge(
@@ -287,8 +291,8 @@ def train_v3(
     # Ensure EMA model is on the right device
     ema_model.averaged_model.to(device)
 
-    # torch.compile
-    if device.type == "cuda" and not distributed:
+    # torch.compile (Chi doesn't use it)
+    if device.type == "cuda" and not distributed and not config.no_compile:
         policy = torch.compile(policy)
         log.info("torch.compile enabled")
 

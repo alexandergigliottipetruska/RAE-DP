@@ -102,6 +102,12 @@ def main():
     parser.add_argument("--save_every_epoch", type=int, default=10)
     parser.add_argument("--resume", type=str, default=None)
 
+    # Precision (Chi runs fp32, no compile)
+    parser.add_argument("--no_amp", action="store_true",
+                        help="Disable BF16 autocast (run in fp32 like Chi)")
+    parser.add_argument("--no_compile", action="store_true",
+                        help="Disable torch.compile (Chi doesn't use it)")
+
     # Device
     parser.add_argument("--device", type=str, default="cuda")
 
@@ -167,6 +173,8 @@ def main():
         eval_mode=args.eval_mode,
         val_ratio=args.val_ratio,
         val_seed=args.val_seed,
+        no_amp=args.no_amp,
+        no_compile=args.no_compile,
     )
 
     train_v3(config, device=args.device, resume_from=args.resume)
