@@ -152,10 +152,11 @@ def create_robomimic_chinorm_env(hdf5_path):
 
 
 def plot_comparison(traj_custom, traj_robomimic, demo_key, output_dir):
-    """Plot side-by-side EE trajectories and rewards."""
+    """Plot side-by-side EE trajectories and rewards (thread-safe, no pyplot leak)."""
     import matplotlib
     matplotlib.use('Agg')
-    import matplotlib.pyplot as plt
+    from matplotlib.figure import Figure
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
 
     steps = [d["step"] for d in traj_custom]
     ee_a = np.array([d["eef_pos"] for d in traj_custom])
@@ -163,7 +164,9 @@ def plot_comparison(traj_custom, traj_robomimic, demo_key, output_dir):
     rew_a = np.array([d["reward"] for d in traj_custom])
     rew_b = np.array([d["reward"] for d in traj_robomimic])
 
-    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    fig = Figure(figsize=(18, 10))
+    FigureCanvasAgg(fig)
+    axes = fig.subplots(2, 3)
     fig.suptitle(f'GT Replay: {demo_key}', fontsize=14, fontweight='bold')
     colors = ['tab:blue', 'tab:orange']
 
@@ -183,9 +186,9 @@ def plot_comparison(traj_custom, traj_robomimic, demo_key, output_dir):
     ax.set_title('Reward'); ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
 
     axes[1, 1].axis('off')
-    plt.tight_layout(rect=[0, 0, 1, 0.95])
-    plt.savefig(os.path.join(output_dir, f"{demo_key}.png"), dpi=100, bbox_inches='tight')
-    plt.close()
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    fig.savefig(os.path.join(output_dir, f"{demo_key}.png"), dpi=100, bbox_inches='tight')
+    del fig
 
 
 def plot_summary(results, output_dir):
@@ -260,7 +263,7 @@ def main():
     parser.add_argument("--skip_plots", action="store_true")
     parser.add_argument("--chi_norm", action="store_true",
                         help="Also test Chi-style normalized action pipeline")
-    parser.add_argument("--workers", type=int, default=4,
+    parser.add_argument("--workers", type=int, default=2,
                         help="Number of parallel env instances (default: 4)")
     args = parser.parse_args()
 

@@ -194,13 +194,23 @@ def convert_task(raw_hdf5_path: str, output_path: str, task: str = "lift", rot6d
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Convert robomimic HDF5 to unified schema")
+    parser.add_argument("input", nargs="?", default=None,
+                        help="Input raw HDF5 path (overrides --config paths)")
+    parser.add_argument("output", nargs="?", default=None,
+                        help="Output unified HDF5 path (overrides --config paths)")
     parser.add_argument("--task", default="lift", help="Task name (e.g. lift, can, square)")
     parser.add_argument("--variant", default="ph", help="Dataset variant (ph or mh)")
+    parser.add_argument("--rot6d", action="store_true",
+                        help="Convert 7D axis-angle to 10D rot6d actions")
     parser.add_argument("--config", default="data_pipeline/configs/paths.yaml")
     args = parser.parse_args()
 
-    paths = load_paths(args.config)
-    raw_hdf5 = Path(paths["robomimic_raw"]) / args.task / args.variant / "image.hdf5"
-    output_hdf5 = Path(paths["unified_data_dir"]) / "robomimic" / args.task / f"{args.variant}.hdf5"
+    if args.input and args.output:
+        raw_hdf5 = args.input
+        output_hdf5 = args.output
+    else:
+        paths = load_paths(args.config)
+        raw_hdf5 = str(Path(paths["robomimic_raw"]) / args.task / args.variant / "image.hdf5")
+        output_hdf5 = str(Path(paths["unified_data_dir"]) / "robomimic" / args.task / f"{args.variant}.hdf5")
 
-    convert_task(str(raw_hdf5), str(output_hdf5), task=args.task)
+    convert_task(raw_hdf5, output_hdf5, task=args.task, rot6d=args.rot6d)

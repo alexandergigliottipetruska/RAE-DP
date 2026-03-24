@@ -35,8 +35,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 log = logging.getLogger(__name__)
 
 
-def create_delta_env():
-    """Create a robosuite 1.5 Lift env with default delta OSC_POSE controller."""
+def create_delta_env(env_name="Lift"):
+    """Create a robosuite 1.5 env with default delta OSC_POSE controller."""
     import robosuite as suite
     from robosuite.controllers import load_composite_controller_config
 
@@ -44,7 +44,7 @@ def create_delta_env():
     # Default is already delta mode — no modifications needed
 
     env = suite.make(
-        env_name="Lift",
+        env_name=env_name,
         robots="Panda",
         has_renderer=False,
         has_offscreen_renderer=False,  # no rendering needed
@@ -72,6 +72,17 @@ def convert_demo(env, states, delta_actions):
     T = len(delta_actions)
     abs_actions = np.zeros((T, 7), dtype=np.float64)
     robot = env.robots[0]
+    arm_ctrl = robot.composite_controller.part_controllers['right']
+
+    # Sync controller with demo's initial state for deterministic t=0.
+    # 1. Set sim state → forward kinematics
+    # 2. Update ref_pos/ref_ori_mat from sim (they're cached, not auto-updated)
+    # 3. Clear goals → next control() initializes from fresh ref_pos
+    env.sim.set_state_from_flattened(states[0])
+    env.sim.forward()
+    arm_ctrl.update_reference_data()
+    arm_ctrl.goal_pos = None
+    arm_ctrl.goal_ori = None
 
     for t in range(T):
         # Reset to this timestep's state
@@ -80,9 +91,6 @@ def convert_demo(env, states, delta_actions):
 
         # Process delta action through controller (sets goal_pos/goal_ori)
         robot.control(delta_actions[t], policy_step=True)
-
-        # Read goal from the arm controller
-        arm_ctrl = robot.composite_controller.part_controllers['right']
 
         # Convert from base/origin frame to world frame
         # run_controller does: desired_world_pos = origin_pos + origin_ori @ goal_pos
@@ -106,19 +114,29 @@ def main():
     parser.add_argument("--output", required=True, help="Output absolute HDF5")
     parser.add_argument("--num_demos", type=int, default=None,
                         help="Number of demos to convert (default: all)")
+    parser.add_argument("--env_name", default=None,
+                        help="robosuite env name (default: auto-detect from HDF5 env_args)")
     parser.add_argument("--verify", action="store_true",
                         help="Compare first demo's abs actions to Chi's 1.2 version")
     parser.add_argument("--chi_abs_hdf5", default=None,
                         help="Chi's image_abs.hdf5 for verification comparison")
     args = parser.parse_args()
 
+    # Auto-detect env_name from HDF5 if not provided
+    if args.env_name is None:
+        import json
+        with h5py.File(args.input, "r") as f:
+            env_args = json.loads(f["data"].attrs["env_args"])
+            args.env_name = env_args["env_name"]
+        log.info("Auto-detected env_name: %s", args.env_name)
+
     # Copy input to output (preserves all metadata, images, obs, etc.)
     log.info("Copying %s → %s", args.input, args.output)
     shutil.copy2(args.input, args.output)
 
     # Create env
-    log.info("Creating robosuite 1.5 delta env")
-    env = create_delta_env()
+    log.info("Creating robosuite 1.5 delta env for %s", args.env_name)
+    env = create_delta_env(args.env_name)
     env.reset()
 
     # Print controller info
