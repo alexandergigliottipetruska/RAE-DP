@@ -199,19 +199,22 @@ def precompute(
         all_keys = sorted(src["data"].keys())
         log.info("Processing %d demos from %s", len(all_keys), hdf5_path)
 
+        # Store original num_cam_slots so the loader knows full K
+        first_grp = src[f"data/{all_keys[0]}"]
+        K_full = first_grp["images"].shape[1]
+        dst.attrs["num_cam_slots"] = K_full
+
         for key in tqdm(all_keys, desc="Precomputing tokens"):
             grp = src[f"data/{key}"]
             T = grp["images"].shape[0]       # timesteps
-            K = grp["images"].shape[1]       # camera views
             view_present = grp["view_present"][:]
 
-            # Allocate output buffer for this demo
-            tokens_all = np.zeros((T, K, 196, 1024), dtype=np_dtype)
+            # Only store active views (saves 50% for robomimic 2/4 cameras)
+            active_indices = np.where(view_present)[0]
+            K_active = len(active_indices)
+            tokens_all = np.zeros((T, K_active, 196, 1024), dtype=np_dtype)
 
-            for k in range(K):
-                if not view_present[k]:
-                    continue
-
+            for i, k in enumerate(active_indices):
                 # Load all T images for this view: (T, H, W, 3) uint8
                 imgs_raw = grp["images"][:, k]
 
@@ -226,23 +229,25 @@ def precompute(
 
                 # Encode in batches
                 view_tokens = []
-                for i in range(0, T, batch_size):
-                    batch = imgs_tensor[i : i + batch_size].to(device)
+                for j in range(0, T, batch_size):
+                    batch = imgs_tensor[j : j + batch_size].to(device)
                     with torch.no_grad():
                         raw = encoder(batch)           # (B, 196, 1024) fp32
                         normed = cancel_affine_ln(raw) # (B, 196, 1024) fp32
                     view_tokens.append(_to_numpy(normed, preset))
 
-                tokens_all[:, k] = np.concatenate(view_tokens, axis=0)
+                tokens_all[:, i] = np.concatenate(view_tokens, axis=0)
 
             # ── Write demo to output ─────────────────────────────────────
             dst_grp = dst.create_group(f"data/{key}")
 
             # Chunking helps compressed datasets; harmless for uncompressed
-            chunks = (min(T, 16), K, 196, 1024) if h5_kwargs else None
+            chunks = (min(T, 16), K_active, 196, 1024) if h5_kwargs else None
             dst_grp.create_dataset(
                 "tokens", data=tokens_all, chunks=chunks, **h5_kwargs,
             )
+            # Map from compact index → original camera slot
+            dst_grp.create_dataset("active_cam_indices", data=active_indices)
 
             # Copy non-image datasets verbatim
             for ds_name in ["actions", "proprio", "view_present"]:

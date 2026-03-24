@@ -183,7 +183,18 @@ class Stage3Dataset(Dataset):
         proprio_slice = grp["proprio"][obs_start : obs_end]   # (<=T_obs, D_prop)
 
         if is_cached:
-            tokens_slice = grp["tokens"][obs_start : obs_end]  # (<=T_obs, K, 196, 1024) float16
+            tokens_slice = grp["tokens"][obs_start : obs_end]  # (<=T_obs, K_active, 196, 1024)
+            # Compact tokens: only active views stored, pad back to full K
+            if "active_cam_indices" in grp:
+                K_full = int(grp.file.attrs.get("num_cam_slots", 4))
+                if tokens_slice.shape[1] < K_full:
+                    active_idx = grp["active_cam_indices"][:]
+                    padded = np.zeros(
+                        (*tokens_slice.shape[:1], K_full, *tokens_slice.shape[2:]),
+                        dtype=tokens_slice.dtype,
+                    )
+                    padded[:, active_idx] = tokens_slice
+                    tokens_slice = padded
         else:
             imgs_slice = grp["images"][obs_start : obs_end]    # (<=T_obs, K, H, W, 3)
 
