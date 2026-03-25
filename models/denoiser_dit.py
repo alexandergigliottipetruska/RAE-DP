@@ -183,7 +183,12 @@ class DiTDenoiser(nn.Module):
         ])
 
         # --- Final LayerNorm + output head ---
-        self.norm_f = nn.LayerNorm(d_model)
+        self.norm_f = nn.LayerNorm(d_model, elementwise_affine=False)
+        # Final adaLN-Zero: conditions output norm on c (same pattern as DiT blocks)
+        self.final_modulation = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(d_model, 2 * d_model),
+        )
         self.head = nn.Linear(d_model, ac_dim)
 
         # Weight init: normal(0, 0.02) for all linear/embedding weights,
@@ -195,6 +200,8 @@ class DiTDenoiser(nn.Module):
         for block in self.blocks:
             nn.init.zeros_(block.adaLN_modulation[-1].weight)
             nn.init.zeros_(block.adaLN_modulation[-1].bias)
+        nn.init.zeros_(self.final_modulation[-1].weight)
+        nn.init.zeros_(self.final_modulation[-1].bias)
 
     def _init_weights(self, module):
         """Normal(0, 0.02) init for Linear/Embedding; ones/zeros for affine LayerNorm."""
@@ -303,6 +310,7 @@ class DiTDenoiser(nn.Module):
         for block in self.blocks:
             x = block(x, c, attn_mask=attn_mask)
 
-        # 6. Output head
-        x = self.norm_f(x)
+        # 6. Final conditioned norm + output head (adaLN-Zero, matching DiT blocks)
+        shift_f, scale_f = self.final_modulation(c).chunk(2, dim=-1)  # (B, d_model)
+        x = self.norm_f(x) * (1.0 + scale_f.unsqueeze(1)) + shift_f.unsqueeze(1)
         return self.head(x)  # (B, T_pred, ac_dim)

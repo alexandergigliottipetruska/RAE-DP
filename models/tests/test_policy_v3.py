@@ -155,18 +155,31 @@ class TestPolicyV3Gradients:
         assert has_grad, "Denoiser should receive gradients"
 
     def test_obs_encoder_receives_gradients(self):
-        """ObservationEncoder parameters receive gradients."""
+        """Obs projection in denoiser receives gradients."""
         policy = _make_policy()
         batch = _make_batch(cached=True)
         loss = policy.compute_loss(batch)
         loss.backward()
-        # ObservationEncoder is now passthrough (no learnable params in token path).
-        # The projection is in denoiser.cond_obs_emb (Linear(1033, 256)).
+        # cross_attn: obs proj is denoiser.cond_obs_emb; dit: denoiser.obs_proj
+        obs_proj = getattr(policy.denoiser, "cond_obs_emb", None) or getattr(policy.denoiser, "obs_proj", None)
+        assert obs_proj is not None, "Denoiser missing obs projection layer"
         has_grad = (
-            policy.denoiser.cond_obs_emb.weight.grad is not None
-            and not torch.all(policy.denoiser.cond_obs_emb.weight.grad == 0)
+            obs_proj.weight.grad is not None
+            and not torch.all(obs_proj.weight.grad == 0)
         )
-        assert has_grad, "Denoiser cond_obs_emb should receive gradients (obs projection)"
+        assert has_grad, "Denoiser obs projection should receive gradients"
+
+    def test_obs_encoder_receives_gradients_dit(self):
+        """Obs projection in DiT denoiser receives gradients."""
+        policy = _make_policy(denoiser_type="dit")
+        batch = _make_batch(cached=True)
+        loss = policy.compute_loss(batch)
+        loss.backward()
+        has_grad = (
+            policy.denoiser.obs_proj.weight.grad is not None
+            and not torch.all(policy.denoiser.obs_proj.weight.grad == 0)
+        )
+        assert has_grad, "DiT obs_proj should receive gradients"
 
 
 class TestPolicyV3Modes:
@@ -212,3 +225,53 @@ class TestPolicyV3Modes:
         }
         loss = policy.compute_loss(batch)
         assert torch.isfinite(loss)
+
+
+class TestPolicyV3DiT:
+    """Tests for PolicyDiTv3 with denoiser_type='dit'."""
+
+    def test_dit_compute_loss_finite(self):
+        """DiT denoiser: compute_loss returns finite scalar."""
+        policy = _make_policy(denoiser_type="dit")
+        batch = _make_batch(cached=True)
+        loss = policy.compute_loss(batch)
+        assert loss.dim() == 0
+        assert torch.isfinite(loss)
+        assert loss.item() > 0
+
+    def test_dit_predict_action_shape(self):
+        """DiT denoiser: predict_action returns correct shape."""
+        policy = _make_policy(denoiser_type="dit")
+        policy.eval()
+        obs = _make_batch(cached=True)
+        actions = policy.predict_action(obs)
+        assert actions.shape == (B, T_P - T_O + 1, AC_DIM)
+
+    def test_dit_predict_action_finite(self):
+        """DiT denoiser: predict_action output is finite."""
+        policy = _make_policy(denoiser_type="dit")
+        policy.eval()
+        obs = _make_batch(cached=True)
+        actions = policy.predict_action(obs)
+        assert torch.isfinite(actions).all()
+
+    def test_dit_denoiser_receives_gradients(self):
+        """DiT denoiser params receive gradients."""
+        policy = _make_policy(denoiser_type="dit")
+        batch = _make_batch(cached=True)
+        loss = policy.compute_loss(batch)
+        loss.backward()
+        has_grad = any(
+            p.grad is not None and not torch.all(p.grad == 0)
+            for p in policy.denoiser.parameters()
+        )
+        assert has_grad, "DiT denoiser should receive gradients"
+
+    def test_dit_final_modulation_gets_gradient(self):
+        """DiT final_modulation (conditioned output norm) gets gradient."""
+        policy = _make_policy(denoiser_type="dit")
+        batch = _make_batch(cached=True)
+        loss = policy.compute_loss(batch)
+        loss.backward()
+        fm_linear = policy.denoiser.final_modulation[-1]
+        assert fm_linear.weight.grad is not None, "final_modulation weight should have grad"

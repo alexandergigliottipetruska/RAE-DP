@@ -1,7 +1,8 @@
-"""PolicyDiTv3 — Chi's cross-attention transformer denoiser in our pipeline.
+"""PolicyDiTv3 — pluggable diffusion policy for robotic manipulation.
 
-Composes: Stage1Bridge → ObservationEncoder → TransformerDenoiser
+Composes: Stage1Bridge → ObservationEncoder → Denoiser
 with DDPM training (epsilon prediction) and DDIM inference.
+Supports denoiser_type="cross_attn" (Chi's transformer) or "dit" (adaLN-Zero DiT).
 
 Key differences from PolicyDiT (V1/V2):
   - Cross-attention denoiser (actions attend to obs), NOT adaLN-Zero
@@ -122,6 +123,14 @@ class PolicyDiTv3(nn.Module):
             clip_sample=True,
         )
 
+        # DDIM scheduler for inference (cached; set_timesteps called at predict time)
+        self.ddim_scheduler = DDIMScheduler(
+            num_train_timesteps=train_diffusion_steps,
+            beta_schedule="squaredcos_cap_v2",
+            prediction_type="epsilon",
+            clip_sample=True,
+        )
+
     def _encode_obs(self, batch: dict, pre_normalized: bool = True) -> dict:
         """Encode observations into conditioning dict.
 
@@ -207,14 +216,9 @@ class PolicyDiTv3(nn.Module):
         # 1. Encode observations (eval: images are raw [0,1], bridge normalizes)
         obs_cond = self._encode_obs(obs_dict, pre_normalized=False)
 
-        # 2. Create DDIM scheduler for inference
-        scheduler = DDIMScheduler(
-            num_train_timesteps=self.train_diffusion_steps,
-            beta_schedule="squaredcos_cap_v2",
-            prediction_type="epsilon",
-            clip_sample=True,
-        )
-        scheduler.set_timesteps(self.eval_diffusion_steps, device=device)
+        # 2. Set DDIM timesteps on cached scheduler
+        self.ddim_scheduler.set_timesteps(self.eval_diffusion_steps, device=device)
+        scheduler = self.ddim_scheduler
 
         # 3. Start from random noise
         actions = torch.randn(B, self.T_pred, self.ac_dim, device=device)
