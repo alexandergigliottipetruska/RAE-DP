@@ -35,6 +35,9 @@ def main():
                         help="Stage 1 checkpoint path")
 
     # Architecture
+    parser.add_argument("--denoiser_type", type=str, default="cross_attn",
+                        choices=["cross_attn", "dit"],
+                        help="Denoiser architecture: 'cross_attn' (Chi) or 'dit' (adaLN-Zero)")
     parser.add_argument("--ac_dim", type=int, default=10)
     parser.add_argument("--proprio_dim", type=int, default=9)
     parser.add_argument("--d_model", type=int, default=256)
@@ -135,6 +138,7 @@ def main():
     config = V3Config(
         stage1_checkpoint=args.stage1_checkpoint,
         hdf5_paths=args.hdf5,
+        denoiser_type=args.denoiser_type,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         norm_mode=args.norm_mode,

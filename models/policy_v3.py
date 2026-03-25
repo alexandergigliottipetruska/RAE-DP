@@ -27,7 +27,7 @@ from models.stage1_bridge import Stage1Bridge
 
 
 class PolicyDiTv3(nn.Module):
-    """V3 diffusion policy with cross-attention transformer denoiser.
+    """V3 diffusion policy with pluggable denoiser.
 
     Args:
         bridge:               Stage1Bridge (frozen encoder + trainable adapter).
@@ -44,6 +44,7 @@ class PolicyDiTv3(nn.Module):
         eval_diffusion_steps:  DDIM inference steps.
         p_drop_emb:           Embedding dropout.
         p_drop_attn:          Attention dropout.
+        denoiser_type:        "cross_attn" (Chi's transformer) or "dit" (adaLN-Zero DiT).
     """
 
     def __init__(
@@ -62,6 +63,7 @@ class PolicyDiTv3(nn.Module):
         eval_diffusion_steps: int = 100,
         p_drop_emb: float = 0.0,
         p_drop_attn: float = 0.3,
+        denoiser_type: str = "cross_attn",
     ):
         super().__init__()
 
@@ -81,20 +83,36 @@ class PolicyDiTv3(nn.Module):
             n_active_cams=n_active_cams,
         )
 
-        # Transformer denoiser: cross-attention to obs conditioning
-        # cond_dim = obs_encoder.output_dim (1033 for robomimic)
-        # This matches Chi: cond_obs_emb is Linear(1033, 256) — single projection
-        self.denoiser = TransformerDenoiser(
-            ac_dim=ac_dim,
-            d_model=d_model,
-            n_head=n_head,
-            n_layers=n_layers,
-            T_pred=T_pred,
-            cond_dim=self.obs_encoder.output_dim,
-            p_drop_emb=p_drop_emb,
-            p_drop_attn=p_drop_attn,
-            causal_attn=True,
-        )
+        cond_dim = self.obs_encoder.output_dim  # 1033 for robomimic
+
+        if denoiser_type == "dit":
+            from models.denoiser_dit import DiTDenoiser
+            self.denoiser = DiTDenoiser(
+                ac_dim=ac_dim,
+                d_model=d_model,
+                n_head=n_head,
+                n_layers=n_layers,
+                T_pred=T_pred,
+                cond_dim=cond_dim,
+                p_drop_emb=p_drop_emb,
+                p_drop_attn=p_drop_attn,
+                causal_attn=True,
+            )
+        elif denoiser_type == "cross_attn":
+            # Chi's cross-attention transformer: cond_obs_emb is Linear(1033, 256)
+            self.denoiser = TransformerDenoiser(
+                ac_dim=ac_dim,
+                d_model=d_model,
+                n_head=n_head,
+                n_layers=n_layers,
+                T_pred=T_pred,
+                cond_dim=cond_dim,
+                p_drop_emb=p_drop_emb,
+                p_drop_attn=p_drop_attn,
+                causal_attn=True,
+            )
+        else:
+            raise ValueError(f"Unknown denoiser_type: {denoiser_type!r}. Use 'cross_attn' or 'dit'.")
 
         # DDPM noise scheduler for training
         self.noise_scheduler = DDPMScheduler(

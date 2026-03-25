@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:arxiv.org)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "Bash(grep -E \"\\\\.\\(py|sh\\)$\")"
+    ]
+  }
+}

@@ -210,6 +210,9 @@ class V3Config:
     val_ratio: float = 0.0              # Chi uses 0.02 (4 val demos, seed=42)
     val_seed: int = 42                  # seed for random val split
 
+    # Denoiser type
+    denoiser_type: str = "cross_attn"   # "cross_attn" (Chi) or "dit" (adaLN-Zero)
+
     # Precision — Chi runs fp32, no torch.compile
     no_amp: bool = False                # disable BF16 autocast
     no_compile: bool = False            # disable torch.compile
@@ -344,6 +347,7 @@ def train_v3(
         eval_diffusion_steps=config.eval_diffusion_steps,
         p_drop_emb=config.p_drop_emb,
         p_drop_attn=config.p_drop_attn,
+        denoiser_type=config.denoiser_type,
     )
     policy = policy.to(device)
 
