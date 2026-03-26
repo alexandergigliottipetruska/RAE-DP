@@ -214,6 +214,9 @@ class V3Config:
     no_amp: bool = False                # disable BF16 autocast
     no_compile: bool = False            # disable torch.compile
 
+    # Reproducibility
+    seed: int = 0                       # global seed (0 = random)
+
 
 # ---------------------------------------------------------------------------
 # V3 Checkpointing
@@ -320,6 +323,18 @@ def train_v3(
         torch.cuda.set_device(device)
     else:
         device = torch.device(device)
+
+    # Seed everything for reproducibility
+    if config.seed > 0:
+        import random
+        random.seed(config.seed)
+        np.random.seed(config.seed)
+        torch.manual_seed(config.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(config.seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        log.info("Global seed set to %d (deterministic mode)", config.seed)
 
     use_amp = (device.type == "cuda") and not config.no_amp
 

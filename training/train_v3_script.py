@@ -108,6 +108,10 @@ def main():
     parser.add_argument("--no_compile", action="store_true",
                         help="Disable torch.compile (Chi doesn't use it)")
 
+    # Reproducibility
+    parser.add_argument("--seed", type=int, default=0,
+                        help="Global seed for reproducibility (0 = random)")
+
     # Device
     parser.add_argument("--device", type=str, default="cuda")
 
@@ -175,6 +179,7 @@ def main():
         val_seed=args.val_seed,
         no_amp=args.no_amp,
         no_compile=args.no_compile,
+        seed=args.seed,
     )
 
     train_v3(config, device=args.device, resume_from=args.resume)
