@@ -837,7 +837,6 @@ def _run_v3_eval(policy, ema_model, config, epoch, device,
     norm_stats = load_norm_stats(config.eval_hdf5)
 
     if config.eval_mode == "robomimic":
-        import os
         from training.eval_v3_robomimic import evaluate_v3_robomimic_parallel
         video_dir = os.path.join(config.save_dir, "media", f"epoch_{epoch:04d}")
         success_rate, results = evaluate_v3_robomimic_parallel(
