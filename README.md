@@ -362,7 +362,7 @@ Demonstrations are stored in 7D delta end-effector format `[dx, dy, dz, rx, ry, 
 If you find this work useful, please consider citing:
 
 ```bibtex
-@misc{gigliottipetruska2026raedit,
+@misc{gigliottialidenassau2026raedit,
   title        = {Robust Multi-View Diffusion Policy with Frozen {ViT} and {RAE}-Decoder Regularization},
   author       = {Gigliotti Petruska, Alexander and Ali, Naqeeb and de Nassau, Jean},
   year         = {2026},
