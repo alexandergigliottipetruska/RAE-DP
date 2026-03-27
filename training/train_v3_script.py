@@ -57,6 +57,9 @@ def main():
     parser.add_argument("--warmup_steps", type=int, default=1000)
     parser.add_argument("--grad_clip", type=float, default=0.0,
                         help="Gradient clipping (0=disabled, matching Chi)")
+    parser.add_argument("--lr_schedule", type=str, default="cosine",
+                        choices=["cosine", "constant"],
+                        help="LR schedule: cosine (default) or constant (warmup then flat)")
     parser.add_argument("--num_workers", type=int, default=4,
                         help="DataLoader workers (profiled: 4 optimal)")
     parser.add_argument("--no_rot6d", action="store_true",
@@ -93,6 +96,19 @@ def main():
     parser.add_argument("--norm_mode", type=str, default="minmax",
                         choices=["minmax", "zscore", "chi"],
                         help="'minmax'=all dims [-1,1], 'chi'=pos minmax + rot6d/grip identity")
+
+    # Spatial tokens
+    parser.add_argument("--spatial_pool_size", type=int, default=1,
+                        choices=[1, 4, 7, 14],
+                        help="Spatial pool: 1=avg pool (default), 4/7/14=spatial tokens per camera")
+
+    # Augmentation — periodic token refresh with random crop
+    parser.add_argument("--augment_refresh_every", type=int, default=0,
+                        help="Re-encode train tokens with random crop every N epochs (0=disabled, 5=recommended)")
+    parser.add_argument("--random_crop_size", type=int, default=208,
+                        help="Crop to this size, then resize back to 224 (208 = ~93%% of 224)")
+    parser.add_argument("--image_hdf5", type=str, default="",
+                        help="Raw image HDF5 for token refresh (needed if augment_refresh_every > 0)")
 
     # Val split override (Chi uses val_ratio=0.02)
     parser.add_argument("--val_ratio", type=float, default=0.0,
@@ -163,6 +179,7 @@ def main():
         num_epochs=args.num_epochs,
         warmup_steps=args.warmup_steps,
         grad_clip=args.grad_clip,
+        lr_schedule=args.lr_schedule,
         weight_decay_denoiser=args.weight_decay_denoiser,
         weight_decay_encoder=args.weight_decay_encoder,
         p_drop_attn=args.p_drop_attn,
@@ -183,6 +200,10 @@ def main():
         no_amp=args.no_amp,
         no_compile=args.no_compile,
         seed=args.seed,
+        spatial_pool_size=args.spatial_pool_size,
+        augment_refresh_every=args.augment_refresh_every,
+        random_crop_size=args.random_crop_size,
+        image_hdf5=args.image_hdf5,
     )
 
     train_v3(config, device=args.device, resume_from=args.resume)

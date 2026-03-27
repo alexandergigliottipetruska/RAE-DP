@@ -27,6 +27,8 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
+from PIL import Image
+
 from data_pipeline.conversion.unified_schema import read_mask
 from data_pipeline.conversion.compute_norm_stats import load_norm_stats
 from data_pipeline.utils.rotation import convert_actions_to_rot6d, convert_actions_quat_to_rot6d
@@ -34,6 +36,28 @@ from data_pipeline.utils.rotation import convert_actions_to_rot6d, convert_actio
 # ImageNet normalization constants (RGB order)
 _IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 _IMAGENET_STD  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+
+
+def _random_crop_resize(img_hwc: np.ndarray, crop_size: int = 208,
+                        target_size: int = 224) -> np.ndarray:
+    """Random crop then resize back to target size. Applied per camera view.
+
+    Args:
+        img_hwc: uint8 (H, W, 3) image, H=W=224
+        crop_size: crop to this size (208 ≈ 93% of 224, similar to Chi's 76/84 ≈ 90%)
+        target_size: resize back to this (224 for ViT patch grid)
+
+    Returns:
+        uint8 (target_size, target_size, 3) image
+    """
+    H, W = img_hwc.shape[:2]
+    top = np.random.randint(0, H - crop_size + 1)
+    left = np.random.randint(0, W - crop_size + 1)
+    cropped = img_hwc[top:top + crop_size, left:left + crop_size]
+    resized = np.array(
+        Image.fromarray(cropped).resize((target_size, target_size), Image.LANCZOS)
+    )
+    return resized
 
 
 def worker_init_open_handles(worker_id):
@@ -81,6 +105,7 @@ class Stage3Dataset(Dataset):
         pad_before: int = 0,
         pad_after: int = 0,
         demo_keys_override: "list[str] | None" = None,
+        image_hdf5_path: str = "",
     ):
         if isinstance(hdf5_paths, str):
             hdf5_paths = [hdf5_paths]
@@ -91,6 +116,8 @@ class Stage3Dataset(Dataset):
         self.use_rot6d = use_rot6d
         self.pad_before = pad_before
         self.pad_after = pad_after
+        self._image_hdf5_path = image_hdf5_path
+        self._refreshed_tokens = {}  # (file_idx, demo_key) → np.ndarray fp16
 
         if norm_mode not in ("zscore", "minmax", "chi"):
             raise ValueError(f"norm_mode must be 'zscore', 'minmax', or 'chi', got '{norm_mode}'")
@@ -178,6 +205,82 @@ class Stage3Dataset(Dataset):
                 h.close()
             self._handles = None
 
+    @torch.no_grad()
+    def refresh_cached_tokens(self, encoder, device, crop_size=208):
+        """Re-encode TRAINING images with random crop augmentation.
+
+        Called every N epochs from the training loop. Only refreshes demos
+        that belong to this dataset instance (training split). Validation
+        datasets should never call this.
+
+        Args:
+            encoder: FrozenMultiViewEncoder (frozen DINOv3-L). Its forward()
+                     already applies cancel_affine_ln internally.
+            device: torch.device for encoder forward pass.
+            crop_size: crop 224→this size, then resize back to 224.
+        """
+        import logging
+        log = logging.getLogger(__name__)
+
+        if not self._image_hdf5_path:
+            raise ValueError("image_hdf5_path required for token refresh")
+
+        self._refreshed_tokens.clear()  # free old tokens
+
+        from tqdm import tqdm
+
+        # Collect all demo keys that this dataset instance uses
+        demo_keys_by_file = {}
+        seen = set()
+        for file_idx, demo_key, _t in self._index:
+            k = (file_idx, demo_key)
+            if k not in seen:
+                seen.add(k)
+                demo_keys_by_file.setdefault(file_idx, []).append(demo_key)
+
+        # Count total demos for progress bar
+        all_demos = [(fi, dk) for fi, dks in demo_keys_by_file.items() for dk in dks]
+
+        total_images = 0
+        with h5py.File(self._image_hdf5_path, 'r') as img_f:
+            for file_idx, demo_key in tqdm(all_demos, desc="Refreshing tokens", unit="demo"):
+                grp_path = f'data/{demo_key}/images'
+                if grp_path not in img_f:
+                    continue
+
+                imgs_raw = img_f[grp_path][:]  # (T, K, H, W, 3) uint8
+                T, K = imgs_raw.shape[:2]
+
+                # Random crop each camera view independently
+                imgs_cropped = imgs_raw.copy()
+                for t_idx in range(T):
+                    for k_idx in range(K):
+                        imgs_cropped[t_idx, k_idx] = _random_crop_resize(
+                            imgs_cropped[t_idx, k_idx], crop_size, target_size=224)
+
+                # ImageNet normalize: uint8 → [0,1] → [-1,1] → ImageNet norm → CHW
+                imgs_01 = imgs_cropped.astype(np.float32) / 255.0
+                imgs_neg11 = imgs_01 * 2.0 - 1.0
+                imgs_enc = (imgs_neg11 - _IMAGENET_MEAN) / _IMAGENET_STD
+                imgs_enc = np.moveaxis(imgs_enc, -1, -3)  # (T, K, 3, H, W)
+
+                # Flatten to (T*K, 3, 224, 224) for batched encoder forward
+                flat = imgs_enc.reshape(-1, 3, 224, 224)
+
+                # Process in chunks to avoid OOM
+                tokens_list = []
+                for i in range(0, len(flat), 32):
+                    batch_t = torch.from_numpy(flat[i:i + 32]).to(device)
+                    raw = encoder(batch_t)  # (B, 196, 1024) — includes internal LN
+                    tokens_list.append(raw.cpu().numpy())
+
+                tokens = np.concatenate(tokens_list).reshape(T, K, 196, -1)
+                self._refreshed_tokens[(file_idx, demo_key)] = tokens.astype(np.float16)
+                total_images += T * K
+
+        log.info("Refreshed %d demos (%d images) with crop_size=%d",
+                 len(self._refreshed_tokens), total_images, crop_size)
+
     def _get_grp(self, file_idx, demo_key):
         """Get HDF5 group, using persistent handle if available."""
         if hasattr(self, '_handles') and self._handles:
@@ -197,7 +300,14 @@ class Stage3Dataset(Dataset):
         obs_end = max(0, t) + 1  # handle t < 0: clamp to frame 0
         proprio_slice = grp["proprio"][obs_start : obs_end]   # (<=T_obs, D_prop)
 
-        if is_cached:
+        refresh_key = (file_idx, demo_key)
+        use_refreshed = refresh_key in self._refreshed_tokens
+
+        if is_cached and use_refreshed:
+            # Use augmented tokens from periodic refresh (training only)
+            all_tokens = self._refreshed_tokens[refresh_key]
+            tokens_slice = all_tokens[obs_start:obs_end].astype(np.float32)
+        elif is_cached:
             tokens_slice = grp["tokens"][obs_start : obs_end]  # (<=T_obs, K_active, 196, 1024)
             # Compact tokens: only active views stored, pad back to full K
             if "active_cam_indices" in grp:

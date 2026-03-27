@@ -9,7 +9,7 @@ Key differences from PolicyDiT (V1/V2):
   - ImageNet norm inside policy (Stage1Bridge handles it for online mode)
   - Adaptive EMA schedule (power=0.75, handled externally)
   - clip_sample=True during DDIM inference
-  - No spatial pooling 196→49 — avg pool to single vector per view
+  - Configurable spatial pooling: S=1 avg pool (default), S=4/7/14 spatial tokens
 
 Training:  policy.compute_loss(batch) → scalar loss
 Inference: policy.predict_action(obs_dict) → (B, T_p, ac_dim)
@@ -62,6 +62,7 @@ class PolicyDiTv3(nn.Module):
         eval_diffusion_steps: int = 100,
         p_drop_emb: float = 0.0,
         p_drop_attn: float = 0.3,
+        spatial_pool_size: int = 1,
     ):
         super().__init__()
 
@@ -79,6 +80,7 @@ class PolicyDiTv3(nn.Module):
             proprio_dim=proprio_dim,
             T_obs=T_obs,
             n_active_cams=n_active_cams,
+            spatial_pool_size=spatial_pool_size,
         )
 
         # Transformer denoiser: cross-attention to obs conditioning
@@ -207,11 +209,11 @@ class PolicyDiTv3(nn.Module):
             noise_pred = self.denoiser(actions, timestep, obs_cond)
             actions = scheduler.step(noise_pred, t, actions).prev_sample
 
-        # 5. Extract executable actions (Chi: start = T_obs - 1)
-        # The first T_obs-1 predicted actions correspond to "past" observation
-        # timesteps. Executable actions start at index T_obs-1.
-        start = self.T_obs - 1
-        return actions[:, start:]
+        # Return full prediction. Callers (eval loops) select which action to
+        # execute based on their execution horizon (T_a).
+        # Note: with pad_before=1 training, position 0 = action at current obs
+        # timestep t, position 1 = action at t+1, etc.
+        return actions
 
     def forward(self, batch: dict) -> torch.Tensor:
         """Alias for compute_loss (used by training loop)."""

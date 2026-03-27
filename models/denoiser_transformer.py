@@ -84,7 +84,7 @@ class TransformerDenoiser(nn.Module):
         # --- Condition positional embedding (timestep + obs tokens) ---
         # We don't know S_obs at init, so we allocate a generous max size
         # and slice at forward time (same pattern as Chi's code)
-        max_cond_len = 128  # generous upper bound
+        max_cond_len = 1024  # handles up to S=14 spatial tokens (786 memory)
         self.cond_pos_emb = nn.Parameter(torch.zeros(1, max_cond_len, d_model))
 
         # --- Dropout ---
@@ -207,7 +207,8 @@ class TransformerDenoiser(nn.Module):
             prediction: (B, T_pred, ac_dim) — predicted noise (epsilon)
         """
         B = noisy_actions.shape[0]
-        obs_tokens = obs_cond["tokens"]  # (B, S_obs, cond_dim)
+        obs_tokens = obs_cond["tokens"]  # (B, S_obs, cond_dim) or (B, N_mem, d_model)
+        pre_projected = obs_cond.get("pre_projected", False)
 
         # 1. Timestep → token
         if not torch.is_tensor(timestep):
@@ -217,8 +218,11 @@ class TransformerDenoiser(nn.Module):
         timestep = timestep.expand(B)
         time_token = self.time_emb(timestep).unsqueeze(1)  # (B, 1, d_model)
 
-        # 2. Obs conditioning → project to d_model
-        cond_obs = self.cond_obs_emb(obs_tokens)  # (B, S_obs, d_model)
+        # 2. Obs conditioning → project to d_model (skip if already projected)
+        if pre_projected:
+            cond_obs = obs_tokens  # already (B, N_mem, d_model)
+        else:
+            cond_obs = self.cond_obs_emb(obs_tokens)  # (B, S_obs, d_model)
 
         # 3. Memory = [time_token, cond_obs] + positional embedding + dropout
         memory = torch.cat([time_token, cond_obs], dim=1)  # (B, 1+S_obs, d_model)
@@ -246,13 +250,20 @@ class TransformerDenoiser(nn.Module):
                 float("-inf"),
             )
 
-            # Memory mask: action token i can see memory positions s where s <= i + 1
-            # (timestep is always visible; obs tokens visible up to current time)
-            i_idx = torch.arange(t, device=noisy_actions.device)
-            s_idx = torch.arange(tc, device=noisy_actions.device)
-            memory_mask = (i_idx[:, None] >= (s_idx[None, :] - 1)).float()
-            memory_mask = memory_mask.masked_fill(memory_mask == 0, float("-inf"))
-            memory_mask = memory_mask.masked_fill(memory_mask == 1, 0.0)
+            if pre_projected:
+                # Spatial tokens: all memory visible to all actions.
+                # The temporal mask is meaningless when all tokens come from
+                # the same timestep(s) and are interleaved with spatial structure.
+                # TODO: for T_obs>1, group spatial tokens by timestep.
+                memory_mask = None
+            else:
+                # Legacy: action token i sees memory positions s where s <= i + 1
+                # (timestep is always visible; obs tokens visible up to current time)
+                i_idx = torch.arange(t, device=noisy_actions.device)
+                s_idx = torch.arange(tc, device=noisy_actions.device)
+                memory_mask = (i_idx[:, None] >= (s_idx[None, :] - 1)).float()
+                memory_mask = memory_mask.masked_fill(memory_mask == 0, float("-inf"))
+                memory_mask = memory_mask.masked_fill(memory_mask == 1, 0.0)
 
         # 7. Decoder: cross-attention to memory
         x = self.decoder(

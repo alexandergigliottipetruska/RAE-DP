@@ -119,12 +119,28 @@ def _run_episode(
     save_frames: bool = False,
     temporal_ensemble: bool = True,
     ensemble_gain: float = 0.01,
+    exec_horizon: int = 1,
+    demo=None,
 ) -> dict:
-    """Run a single RLBench episode with T_a=1.
+    """Run a single RLBench episode.
+
+    Args:
+        exec_horizon: Number of actions to execute per prediction (T_a).
+            T_a=1: re-predict every step (default, most reactive).
+            T_a>1: execute multiple actions from each chunk before re-predicting
+                   (reduces gripper flip-flopping, less reactive to errors).
 
     Returns dict with 'success', 'steps', 'reward', and optionally 'frames'.
     """
-    env.reset()
+    if demo is not None:
+        try:
+            descriptions, obs = env._task.reset_to_demo(demo)
+        except (KeyError, AttributeError):
+            env._task.set_variation(demo.variation_number)
+            descriptions, obs = env._task.reset()
+        env._last_obs = obs
+    else:
+        env.reset()
 
     # Initialize observation buffer (duplicate first frame for start padding)
     init_images = env.get_multiview_images()  # [1, K, 3, H, W]
@@ -144,45 +160,54 @@ def _run_episode(
     step_count = 0
     total_reward = 0.0
     info = {}
+    pending_actions = []  # buffered actions for exec_horizon > 1
 
     while step_count < max_steps:
-        # Stack T_o frames
-        images_seq = np.concatenate(list(img_buffer), axis=0)    # [T_o, K, 3, H, W]
-        proprio_seq = np.concatenate(list(proprio_buffer), axis=0)  # [T_o, D_prop]
-
-        # Normalize proprio (chi mode: pos[0:3] minmax, quat[3:7] identity, grip[7:] minmax)
-        # Must match stage3_dataset._normalize_proprio exactly
-        proprio_norm = proprio_seq.copy()
-        pos_range = np.clip(p_max[:3] - p_min[:3], 1e-6, None)
-        proprio_norm[..., :3] = 2.0 * (proprio_seq[..., :3] - p_min[:3]) / pos_range - 1.0
-        # [3:7] quat: identity (no change)
-        g_min, g_max = p_min[7:], p_max[7:]
-        g_range = np.clip(g_max - g_min, 1e-6, None)
-        proprio_norm[..., 7:] = 2.0 * (proprio_seq[..., 7:] - g_min) / g_range - 1.0
-
-        # Run policy inference
-        with torch.no_grad():
-            pred = policy.predict(
-                torch.from_numpy(images_seq).unsqueeze(0),     # [1, T_o, K, 3, H, W]
-                torch.from_numpy(proprio_norm).unsqueeze(0),   # [1, T_o, D_prop]
-                torch.from_numpy(view_present).unsqueeze(0),   # [1, K]
-            )  # [T_p, 10] normalized
-
-        # Denormalize + convert 10D rot6d → 8D quaternion
-        raw = pred.cpu().numpy() if isinstance(pred, torch.Tensor) else np.asarray(pred)
-        actions_8d = _denorm_and_convert(raw, action_stats)
-
-        if T_pred is None:
-            T_pred = actions_8d.shape[0]
-
-        # Temporal ensemble: store chunk and compute weighted average
-        if temporal_ensemble:
-            action_history.append((step_count, actions_8d))
-            action = _temporal_ensemble(
-                list(action_history), step_count, T_pred, gain=ensemble_gain,
-            )
+        # If we have pending actions from a previous chunk, execute next one
+        if pending_actions:
+            action = pending_actions.pop(0)
         else:
-            action = actions_8d[0]
+            # Predict a new chunk
+            images_seq = np.concatenate(list(img_buffer), axis=0)
+            proprio_seq = np.concatenate(list(proprio_buffer), axis=0)
+
+            proprio_norm = proprio_seq.copy()
+            pos_range = np.clip(p_max[:3] - p_min[:3], 1e-6, None)
+            proprio_norm[..., :3] = 2.0 * (proprio_seq[..., :3] - p_min[:3]) / pos_range - 1.0
+            g_min, g_max = p_min[7:], p_max[7:]
+            g_range = np.clip(g_max - g_min, 1e-6, None)
+            proprio_norm[..., 7:] = 2.0 * (proprio_seq[..., 7:] - g_min) / g_range - 1.0
+
+            with torch.no_grad():
+                pred = policy.predict(
+                    torch.from_numpy(images_seq).unsqueeze(0),
+                    torch.from_numpy(proprio_norm).unsqueeze(0),
+                    torch.from_numpy(view_present).unsqueeze(0),
+                )
+
+            raw = pred.cpu().numpy() if isinstance(pred, torch.Tensor) else np.asarray(pred)
+            actions_8d = _denorm_and_convert(raw, action_stats)
+
+            if T_pred is None:
+                T_pred = actions_8d.shape[0]
+
+            if temporal_ensemble:
+                action_history.append((step_count, actions_8d))
+                action = _temporal_ensemble(
+                    list(action_history), step_count, T_pred, gain=ensemble_gain,
+                )
+                # Buffer remaining actions for exec_horizon > 1
+                if exec_horizon > 1:
+                    for j in range(1, min(exec_horizon, T_pred)):
+                        a = _temporal_ensemble(
+                            list(action_history), step_count + j, T_pred, gain=ensemble_gain,
+                        )
+                        pending_actions.append(a)
+            else:
+                action = actions_8d[0]
+                if exec_horizon > 1:
+                    for j in range(1, min(exec_horizon, len(actions_8d))):
+                        pending_actions.append(actions_8d[j])
 
         if step_count == 0:
             log.debug("  step=0 action: %s",
@@ -230,6 +255,8 @@ def evaluate_v3_rlbench(
     episode_timeout: int = 180,
     save_video: bool = False,
     video_dir: str = "",
+    demos: list = None,
+    exec_horizon: int = 1,
     _cached_env=None,
 ) -> tuple:
     """Run V3 evaluation on an RLBench task.
@@ -288,10 +315,13 @@ def evaluate_v3_rlbench(
         signal.alarm(episode_timeout)
 
         try:
+            demo = demos[ep] if demos is not None and ep < len(demos) else None
             ep_result = _run_episode(
                 wrapper, env, action_stats, proprio_stats,
                 max_steps, obs_horizon,
                 save_frames=save_video,
+                exec_horizon=exec_horizon,
+                demo=demo,
             )
             signal.alarm(0)  # cancel alarm
 
@@ -354,9 +384,15 @@ if __name__ == "__main__":
     parser.add_argument("--T_pred", type=int, default=10)
     parser.add_argument("--save_video", action="store_true")
     parser.add_argument("--video_dir", default="checkpoints/eval_videos")
+    parser.add_argument("--demo_pickles", default="",
+                        help="Path to episodes dir for reset_to_demo (eval on known scenes)")
+    parser.add_argument("--exec_horizon", type=int, default=1,
+                        help="Actions to execute per prediction (T_a). Higher = less gripper flip-flop")
     parser.add_argument("--device", default="cuda")
     args = parser.parse_args()
 
+    import pickle
+    from pathlib import Path
     from data_pipeline.conversion.compute_norm_stats import load_norm_stats
     from models.policy_v3 import PolicyDiTv3
     from models.stage1_bridge import Stage1Bridge
@@ -391,12 +427,29 @@ if __name__ == "__main__":
     wrapper = V3PolicyWrapper(policy, device=str(device))
     norm_stats = load_norm_stats(args.eval_hdf5)
 
+    # Load demo pickles for scene restoration (optional)
+    demo_list = None
+    if args.demo_pickles:
+        ep_root = Path(args.demo_pickles)
+        ep_dirs = sorted(
+            [d for d in ep_root.iterdir()
+             if d.is_dir() and (d / "low_dim_obs.pkl").exists()],
+            key=lambda d: int(d.name.replace("episode", "")),
+        )
+        demo_list = []
+        for d in ep_dirs[:args.num_episodes]:
+            with open(d / "low_dim_obs.pkl", "rb") as fh:
+                demo_list.append(pickle.load(fh))
+        log.info("Loaded %d demo pickles for scene restoration", len(demo_list))
+
     sr, results, env = evaluate_v3_rlbench(
         wrapper, norm_stats,
         task=args.task,
         num_episodes=args.num_episodes,
         save_video=args.save_video,
         video_dir=args.video_dir,
+        demos=demo_list,
+        exec_horizon=args.exec_horizon,
     )
     env.close()
 

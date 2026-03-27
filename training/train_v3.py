@@ -16,6 +16,7 @@ import os
 from dataclasses import dataclass, field
 from datetime import datetime
 
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -190,6 +191,14 @@ class V3Config:
     ema_power: float = 0.75             # Chi: power=0.75 (adaptive decay)
     ema_max_decay: float = 0.9999
 
+    # Spatial tokens
+    spatial_pool_size: int = 1          # 1=avg pool (default), 4/7/14=spatial tokens
+
+    # Augmentation — periodic token refresh with random crop
+    augment_refresh_every: int = 0      # 0=disabled, 5=refresh train tokens every 5 epochs
+    random_crop_size: int = 208         # crop 224→208→resize 224
+    image_hdf5: str = ""                # raw image HDF5 for token refresh
+
     # Logging & checkpointing
     log_every: int = 100
     save_every_epoch: int = 10
@@ -360,13 +369,15 @@ def train_v3(
         eval_diffusion_steps=config.eval_diffusion_steps,
         p_drop_emb=config.p_drop_emb,
         p_drop_attn=config.p_drop_attn,
+        spatial_pool_size=config.spatial_pool_size,
     )
     policy = policy.to(device)
 
-    # Performance
+    # Performance (skip benchmark when seeded — it breaks determinism)
     if device.type == "cuda":
         torch.set_float32_matmul_precision("high")
-        torch.backends.cudnn.benchmark = True
+        if config.seed <= 0:
+            torch.backends.cudnn.benchmark = True
 
     # --- EMA: Chi's implementation (separate model copy) ---
     ema_policy = copy.deepcopy(policy)
@@ -429,7 +440,6 @@ def train_v3(
     valid_keys_override = None
     if config.val_ratio > 0:
         import h5py
-        import numpy as np
         # Get all demo keys from the first HDF5 file
         with h5py.File(config.hdf5_paths[0], "r") as f:
             all_keys = sorted(f["data"].keys())
@@ -452,6 +462,7 @@ def train_v3(
         norm_mode=config.norm_mode, use_rot6d=config.use_rot6d,
         pad_before=config.pad_before, pad_after=config.pad_after,
         demo_keys_override=train_keys_override,
+        image_hdf5_path=config.image_hdf5,
     )
     valid_ds = Stage3Dataset(
         config.hdf5_paths, split="valid",
@@ -540,6 +551,21 @@ def train_v3(
         if train_sampler is not None:
             train_sampler.set_epoch(epoch)
 
+        # Periodic token refresh with random crop augmentation
+        if (config.augment_refresh_every > 0
+                and epoch > 0
+                and epoch % config.augment_refresh_every == 0):
+            import time as _time
+            _t0 = _time.time()
+            log.info("Refreshing train tokens with random crop (epoch %d)...", epoch)
+            bridge = _unwrap(policy).bridge
+            train_ds.refresh_cached_tokens(
+                encoder=bridge.encoder,
+                device=device,
+                crop_size=config.random_crop_size,
+            )
+            log.info("Token refresh done in %.1fs", _time.time() - _t0)
+
         policy.train()
         epoch_losses = {}
         n_steps = 0
@@ -620,8 +646,9 @@ def train_v3(
                 )
 
             # Per-timestep diagnostics + quick eval every eval_every_epoch
+            is_last_epoch = (epoch == config.num_epochs - 1)
             is_full_eval_epoch = (epoch + 1) % config.eval_full_every_epoch == 0
-            if (epoch + 1) % config.eval_every_epoch == 0:
+            if (epoch + 1) % config.eval_every_epoch == 0 or is_last_epoch:
                 # Skip diagnostic on full eval epochs — running DDIM sampling
                 # back-to-back with full eval causes ~2x train loss spikes
                 if not is_full_eval_epoch:
@@ -750,7 +777,10 @@ def _run_per_timestep_diagnostic(
 
     timestep_losses = {}
     obs_cond_val = diag_model._encode_obs(val_dev)
-    for t_val in [0, 25, 50, 75, 99]:
+    n_train_steps = diag_model.train_diffusion_steps
+    # Scale diagnostic timesteps to actual schedule (handles 50 or 100 steps)
+    for t_val in sorted(set([0, n_train_steps // 4, n_train_steps // 2,
+                             3 * n_train_steps // 4, n_train_steps - 1])):
         torch.manual_seed(42)
         noise = torch.randn_like(val_dev["actions"])
         timesteps = torch.full((val_dev["actions"].shape[0],), t_val, device=device, dtype=torch.long)
