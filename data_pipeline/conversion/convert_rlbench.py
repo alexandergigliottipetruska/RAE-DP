@@ -101,6 +101,47 @@ ACTION_DIM = 8    # position (3) + quaternion_xyzw (4) + gripper (1)
 # Helpers
 # ---------------------------------------------------------------------------
 
+def extract_joint_actions(obs_list) -> tuple[np.ndarray, np.ndarray]:
+    """Extract joint_position_action from stepjam RLBench demos.
+
+    Action at time t = joint_position_action from obs at t+1
+    (the commanded target the controller was given).
+    Gripper centered: {0,1} → {-1,+1}.
+
+    Proprio = [joint_positions(7), gripper_centered(1)] (observed, not commanded).
+
+    Returns:
+        actions: [T-1, 8] float32 [joint_targets(7), gripper_centered(1)]
+        proprio: [T, 8] float32 [joint_positions(7), gripper_centered(1)]
+    """
+    T = len(obs_list)
+    assert T >= 2, "Need at least 2 timesteps"
+
+    actions = []
+    for t in range(1, T):
+        obs = obs_list[t]
+        jpa = obs.misc.get("joint_position_action")
+        if jpa is not None:
+            jpa = np.array(jpa, dtype=np.float32)
+            joint_targets = jpa[:7]
+            gripper = jpa[7] if len(jpa) > 7 else float(obs.gripper_open)
+        else:
+            joint_targets = obs.joint_positions.astype(np.float32)
+            gripper = float(obs.gripper_open)
+        gripper_centered = gripper * 2 - 1
+        actions.append(np.concatenate([joint_targets, [gripper_centered]]))
+
+    actions = np.stack(actions)  # (T-1, 8)
+
+    # Proprio: observed joint positions + centered gripper
+    proprio = np.zeros((T, 8), dtype=np.float32)
+    for t, obs in enumerate(obs_list):
+        proprio[t, :7] = obs.joint_positions.astype(np.float32)
+        proprio[t, 7] = float(obs.gripper_open) * 2 - 1
+
+    return actions, proprio
+
+
 def extract_absolute_actions(
     positions: np.ndarray,
     quats_xyzw: np.ndarray,
@@ -220,6 +261,7 @@ def convert_episode(
     ep_dir: Path,
     hdf5_file: h5py.File,
     demo_key: str,
+    use_joint_actions: bool = False,
 ) -> bool:
     """Convert one RLBench episode. Returns False and skips if too short.
 
@@ -232,15 +274,17 @@ def convert_episode(
         print(f"  [SKIP] {demo_key}: only {T} timestep(s)")
         return False
 
-    positions, quats_xyzw, grippers, proprio = extract_proprio_and_pose(obs_list)
-
-    # Absolute actions: [T-1, 8]
-    actions = extract_absolute_actions(positions, quats_xyzw, grippers)
+    if use_joint_actions:
+        actions, proprio = extract_joint_actions(obs_list)
+        proprio_trimmed = proprio[:-1]
+    else:
+        positions, quats_xyzw, grippers, proprio = extract_proprio_and_pose(obs_list)
+        actions = extract_absolute_actions(positions, quats_xyzw, grippers)
+        proprio_trimmed = proprio[:-1]
 
     # Images: [T, K, H, W, 3] uint8 -> keep only first T-1 (paired with actions)
     imgs_all = load_images_for_episode(ep_dir, T)
-    imgs            = imgs_all[:-1]    # [T-1, K, H, W, 3]
-    proprio_trimmed = proprio[:-1]     # [T-1, 8]
+    imgs = imgs_all[:-1]  # [T-1, K, H, W, 3]
 
     T_out = T - 1
     grp = create_demo_group(
@@ -276,6 +320,7 @@ def convert_task(
     output_path: str,
     train_frac: float = 0.9,
     val_dir: str | None = None,
+    use_joint_actions: bool = False,
 ) -> None:
     """Convert all episodes for one task.
 
@@ -330,7 +375,8 @@ def convert_task(
         for ep_dir in train_ep_dirs:
             demo_key = f"demo_{demo_idx}"
             print(f"  [train] {demo_key} <- {ep_dir.name}")
-            ok = convert_episode(ep_dir, f, demo_key)
+            ok = convert_episode(ep_dir, f, demo_key,
+                                 use_joint_actions=use_joint_actions)
             if ok:
                 train_keys.append(demo_key)
             demo_idx += 1
@@ -338,7 +384,8 @@ def convert_task(
         for ep_dir in val_ep_dirs:
             demo_key = f"demo_{demo_idx}"
             print(f"  [valid] {demo_key} <- {ep_dir.name}")
-            ok = convert_episode(ep_dir, f, demo_key)
+            ok = convert_episode(ep_dir, f, demo_key,
+                                 use_joint_actions=use_joint_actions)
             if ok:
                 valid_keys.append(demo_key)
             demo_idx += 1
@@ -388,9 +435,13 @@ def main():
         help="Fraction of episodes for training split (default: 0.9). "
              "Ignored when --val-input is provided.",
     )
+    parser.add_argument(
+        "--joint-actions", action="store_true",
+        help="Use joint_position_action from stepjam demos instead of EE poses.",
+    )
     args = parser.parse_args()
     convert_task(args.input, args.output, train_frac=args.train_frac,
-                 val_dir=args.val_input)
+                 val_dir=args.val_input, use_joint_actions=args.joint_actions)
 
 
 if __name__ == "__main__":
