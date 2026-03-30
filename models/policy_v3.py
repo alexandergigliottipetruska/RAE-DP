@@ -68,6 +68,8 @@ class PolicyDiTv3(nn.Module):
         p_drop_emb: float = 0.0,
         p_drop_attn: float = 0.3,
         spatial_pool_size: int = 1,
+        use_spatial_softmax: bool = False,
+        n_cond_layers: int = 0,
         denoiser_type: str = "transformer",
     ):
         super().__init__()
@@ -87,6 +89,7 @@ class PolicyDiTv3(nn.Module):
             T_obs=T_obs,
             n_active_cams=n_active_cams,
             spatial_pool_size=spatial_pool_size,
+            use_spatial_softmax=use_spatial_softmax,
         )
 
         # Denoiser: selectable backbone
@@ -100,6 +103,7 @@ class PolicyDiTv3(nn.Module):
             p_drop_emb=p_drop_emb,
             p_drop_attn=p_drop_attn,
             causal_attn=True,
+            n_cond_layers=n_cond_layers,
         )
 
         if denoiser_type == "transformer":

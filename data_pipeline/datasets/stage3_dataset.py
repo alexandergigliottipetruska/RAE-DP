@@ -119,8 +119,8 @@ class Stage3Dataset(Dataset):
         self._image_hdf5_path = image_hdf5_path
         self._refreshed_tokens = {}  # (file_idx, demo_key) → np.ndarray fp16
 
-        if norm_mode not in ("zscore", "minmax", "chi"):
-            raise ValueError(f"norm_mode must be 'zscore', 'minmax', or 'chi', got '{norm_mode}'")
+        if norm_mode not in ("zscore", "minmax", "chi", "minmax_margin"):
+            raise ValueError(f"norm_mode must be 'zscore', 'minmax', 'chi', or 'minmax_margin', got '{norm_mode}'")
         if use_rot6d and norm_mode != "chi":
             raise ValueError(
                 "use_rot6d=True requires norm_mode='chi' — stored norm stats are "
@@ -465,8 +465,15 @@ class Stage3Dataset(Dataset):
         return self._normalize(x, stats)
 
     def _normalize(self, x: np.ndarray, stats: dict) -> np.ndarray:
-        """Normalize using zscore or minmax. Chi mode uses minmax for non-action fields."""
-        if self.norm_mode in ("minmax", "chi"):
+        """Normalize using zscore, minmax, or minmax_margin."""
+        if self.norm_mode == "minmax_margin":
+            # Robobase-style: expand bounds by 20% margin, normalize ALL dims to [-1,1]
+            margin = 0.2
+            a_min = stats["min"] - np.abs(stats["min"]) * margin
+            a_max = stats["max"] + np.abs(stats["max"]) * margin
+            a_range = np.clip(a_max - a_min, 1e-6, None)
+            return 2.0 * (x - a_min) / a_range - 1.0
+        elif self.norm_mode in ("minmax", "chi"):
             a_range = np.clip(stats["max"] - stats["min"], 1e-6, None)
             return 2.0 * (x - stats["min"]) / a_range - 1.0
         else:

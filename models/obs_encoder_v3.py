@@ -28,6 +28,40 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+class SpatialSoftmax(nn.Module):
+    """Chi's SpatialSoftmax adapted for ViT patch grids.
+
+    For each channel, computes soft-argmax over 2D positions → (x, y).
+    Input:  (B, D, H, W) feature map
+    Output: (B, D*2) expected coordinates
+    """
+
+    def __init__(self, H: int = 14, W: int = 14, temperature: float = 1.0):
+        super().__init__()
+        self.H, self.W = H, W
+        self.temperature = temperature
+
+        # Normalized coordinate grids [-1, 1]
+        pos_x, pos_y = torch.meshgrid(
+            torch.linspace(-1, 1, W),
+            torch.linspace(-1, 1, H),
+            indexing="xy",
+        )
+        self.register_buffer("pos_x", pos_x.reshape(-1))  # (H*W,)
+        self.register_buffer("pos_y", pos_y.reshape(-1))  # (H*W,)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """x: (B, D, H, W) → (B, D*2)"""
+        B, D = x.shape[:2]
+        flat = x.reshape(B, D, -1)  # (B, D, H*W)
+        attn = torch.softmax(flat / self.temperature, dim=-1)  # (B, D, H*W)
+
+        exp_x = (attn * self.pos_x).sum(dim=-1)  # (B, D)
+        exp_y = (attn * self.pos_y).sum(dim=-1)  # (B, D)
+
+        return torch.cat([exp_x, exp_y], dim=-1)  # (B, D*2)
+
+
 class ObservationEncoder(nn.Module):
     """Encodes adapted visual tokens + proprio into conditioning vectors.
 
@@ -48,6 +82,7 @@ class ObservationEncoder(nn.Module):
         T_obs: int = 2,
         n_active_cams: int = 2,
         spatial_pool_size: int = 1,
+        use_spatial_softmax: bool = False,
     ):
         super().__init__()
         self.adapter_dim = adapter_dim
@@ -55,8 +90,19 @@ class ObservationEncoder(nn.Module):
         self.T_obs = T_obs
         self.n_active_cams = n_active_cams
         self.S = spatial_pool_size
+        self.use_spatial_softmax = use_spatial_softmax
 
-        if spatial_pool_size == 1:
+        if use_spatial_softmax:
+            # --- SpatialSoftmax path: Chi-faithful spatial coordinates ---
+            # 512 channels × 2 coords = 1024D per camera
+            self.spatial_softmax = SpatialSoftmax(H=14, W=14)
+            self.output_dim = n_active_cams * (adapter_dim * 2) + proprio_dim
+            self.global_proj = nn.Sequential(
+                nn.Linear(T_obs * self.output_dim, d_model),
+                nn.GELU(),
+                nn.Linear(d_model, d_model),
+            )
+        elif spatial_pool_size == 1:
             # --- Legacy path: Chi's exact design ---
             self.output_dim = n_active_cams * adapter_dim + proprio_dim
             self.global_proj = nn.Sequential(
@@ -119,31 +165,42 @@ class ObservationEncoder(nn.Module):
         """
         B, T_o, K = adapted_tokens.shape[:3]
 
-        if self.S == 1:
+        if self.use_spatial_softmax or self.S == 1:
             return self._forward_legacy(adapted_tokens, proprio, view_present, B, T_o, K)
         else:
             return self._forward_spatial(adapted_tokens, proprio, view_present, B, T_o, K)
 
     def _forward_legacy(self, adapted_tokens, proprio, view_present, B, T_o, K):
-        """Chi's original path: avg pool → flat concat per timestep."""
-        # 1. Spatial average pool: (B, T_o, K, N, D) → (B, T_o, K, D)
-        pooled = adapted_tokens.mean(dim=3)
+        """Chi's original path: avg pool or SpatialSoftmax → flat concat per timestep."""
+        if self.use_spatial_softmax:
+            # SpatialSoftmax: (B, T_o, K, 196, D) → (B, T_o, K, D*2)
+            N, D = adapted_tokens.shape[3], adapted_tokens.shape[4]
+            H = W = int(N ** 0.5)  # 14
+            flat = adapted_tokens.reshape(B * T_o * K, N, D)
+            feat_2d = flat.reshape(B * T_o * K, H, W, D).permute(0, 3, 1, 2)  # (B*T_o*K, D, H, W)
+            ss = self.spatial_softmax(feat_2d)  # (B*T_o*K, D*2)
+            pooled = ss.reshape(B, T_o, K, D * 2)
+            per_cam_dim = D * 2  # 1024
+        else:
+            # Average pool: (B, T_o, K, N, D) → (B, T_o, K, D)
+            pooled = adapted_tokens.mean(dim=3)
+            per_cam_dim = self.adapter_dim  # 512
 
         # 2. Select only active camera features
         active_features = []
         for k in range(K):
             if view_present[:, k].any():
-                active_features.append(pooled[:, :, k, :])  # (B, T_o, D)
+                active_features.append(pooled[:, :, k, :])  # (B, T_o, per_cam_dim)
 
-        # Stack active cameras: (B, T_o, n_active, D)
+        # Stack active cameras: (B, T_o, n_active, per_cam_dim)
         if len(active_features) > 0:
             active = torch.stack(active_features, dim=2)
         else:
             active = pooled[:, :, :1, :]
 
-        # 3. Flatten active views per timestep: (B, T_o, n_active * adapter_dim)
+        # 3. Flatten active views per timestep: (B, T_o, n_active * per_cam_dim)
         n_active = active.shape[2]
-        active_flat = active.reshape(B, T_o, n_active * self.adapter_dim)
+        active_flat = active.reshape(B, T_o, n_active * per_cam_dim)
 
         # 4. Concatenate proprio: (B, T_o, n_active * adapter_dim + proprio_dim)
         obs_concat = torch.cat([active_flat, proprio], dim=-1)

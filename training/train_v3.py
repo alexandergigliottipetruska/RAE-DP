@@ -68,6 +68,8 @@ def train_step(
     config,
     global_step: int,
     use_amp: bool = False,
+    loss_scale: float = 1.0,
+    step_optimizer: bool = True,
 ) -> dict:
     """One DDPM training step.
 
@@ -78,9 +80,11 @@ def train_step(
         config:      Training config (must have .grad_clip attribute).
         global_step: Current global step (for logging).
         use_amp:     Whether to use BF16 mixed precision.
+        loss_scale:  Multiply loss before backward (1/accum_steps for gradient accumulation).
+        step_optimizer: Whether to clip grads + step optimizer (False for intermediate accum steps).
 
     Returns:
-        Dict of scalar losses for logging.
+        Dict of scalar losses for logging (unscaled).
     """
     device = next(policy.parameters()).device
     device_type = device.type
@@ -94,18 +98,19 @@ def train_step(
     with torch.amp.autocast(device_type, dtype=torch.bfloat16, enabled=use_amp):
         loss = policy(batch_dev)
 
-    # Backward + optimizer step
-    optimizer.zero_grad()
-    loss.backward()
+    # Scale loss for gradient accumulation and backward
+    (loss * loss_scale).backward()
 
-    # Gradient clipping
-    if config.grad_clip > 0:
-        torch.nn.utils.clip_grad_norm_(
-            [p for p in policy.parameters() if p.requires_grad],
-            config.grad_clip,
-        )
+    if step_optimizer:
+        # Gradient clipping
+        if config.grad_clip > 0:
+            torch.nn.utils.clip_grad_norm_(
+                [p for p in policy.parameters() if p.requires_grad],
+                config.grad_clip,
+            )
 
-    optimizer.step()
+        optimizer.step()
+        optimizer.zero_grad()
 
     return {"policy": loss.item(), "total": loss.item()}
 
@@ -180,6 +185,7 @@ class V3Config:
     weight_decay_encoder: float = 1e-6   # Chi: obs_encoder_weight_decay
     num_epochs: int = 100
     grad_clip: float = 0.0              # Chi: no gradient clipping
+    grad_accum_steps: int = 1           # gradient accumulation (effective batch = batch_size * accum)
     warmup_steps: int = 1000            # Chi: 1000
     lr_schedule: str = "cosine"
 
@@ -196,6 +202,8 @@ class V3Config:
 
     # Spatial tokens
     spatial_pool_size: int = 1          # 1=avg pool (default), 4/7/14=spatial tokens
+    use_spatial_softmax: bool = False   # SpatialSoftmax pooling (Chi-style spatial coordinates)
+    n_cond_layers: int = 0              # 0=MLP encoder (Chi), >0=self-attention encoder for spatial tokens
 
     # Augmentation — periodic token refresh with random crop
     augment_refresh_every: int = 0      # 0=disabled, 5=refresh train tokens every 5 epochs
@@ -218,6 +226,7 @@ class V3Config:
     eval_image_size: int = 84
     eval_mode: str = "custom"           # "custom" | "robomimic" | "rlbench"
     eval_exec_horizon: int = 8          # T_a: robomimic=8, RLBench=1
+    keyframe_eval: bool = False         # predict full keyframe sequence, execute all through OMPL
 
     # Val split override (0 = use HDF5 mask, >0 = random split like Chi)
     val_ratio: float = 0.0              # Chi uses 0.02 (4 val demos, seed=42)
@@ -409,6 +418,8 @@ def train_v3(
         p_drop_emb=config.p_drop_emb,
         p_drop_attn=config.p_drop_attn,
         spatial_pool_size=config.spatial_pool_size,
+        use_spatial_softmax=config.use_spatial_softmax,
+        n_cond_layers=config.n_cond_layers,
         denoiser_type=config.denoiser_type,
     )
     policy = policy.to(device)
@@ -619,6 +630,11 @@ def train_v3(
             if is_main else train_loader
         )
 
+        accum = config.grad_accum_steps
+        loss_scale = 1.0 / accum
+        optimizer.zero_grad()
+        micro_step = 0
+
         for batch in loader_iter:
             if train_sampling_batch is None:
                 train_sampling_batch = {
@@ -626,17 +642,22 @@ def train_v3(
                     for k, v in batch.items()
                 }
 
+            micro_step += 1
+            is_accum_step = (micro_step % accum == 0)
+
             step_losses = train_step(
                 batch, policy, optimizer, config, global_step, use_amp=use_amp,
+                loss_scale=loss_scale, step_optimizer=is_accum_step,
             )
 
-            ema_model.step(_unwrap(policy))
-            lr_scheduler.step()
+            if is_accum_step:
+                ema_model.step(_unwrap(policy))
+                lr_scheduler.step()
+                global_step += 1
 
             for k, v in step_losses.items():
                 epoch_losses[k] = epoch_losses.get(k, 0.0) + v
             n_steps += 1
-            global_step += 1
 
             # Update tqdm with per-step loss
             if is_main and hasattr(loader_iter, 'set_postfix'):
@@ -644,6 +665,19 @@ def train_v3(
                     loss=f"{step_losses['total']:.4f}",
                     avg=f"{epoch_losses['total'] / n_steps:.4f}",
                 )
+
+        # Handle leftover micro-batches that didn't complete an accumulation window
+        if micro_step % accum != 0:
+            if config.grad_clip > 0:
+                torch.nn.utils.clip_grad_norm_(
+                    [p for p in policy.parameters() if p.requires_grad],
+                    config.grad_clip,
+                )
+            optimizer.step()
+            optimizer.zero_grad()
+            ema_model.step(_unwrap(policy))
+            lr_scheduler.step()
+            global_step += 1
 
         avg = {k: v / max(n_steps, 1) for k, v in epoch_losses.items()}
 
@@ -937,6 +971,8 @@ def _run_v3_eval(policy, ema_model, config, epoch, device,
             obs_horizon=config.T_obs,
             save_video=save_video,
             video_dir=video_dir,
+            keyframe_eval=getattr(config, 'keyframe_eval', False),
+            norm_mode=config.norm_mode,
             _cached_env=getattr(_run_v3_eval, '_rlbench_env', None),
         )
         n_success = sum(1 for r in results if r["success"])

@@ -98,49 +98,70 @@ ACTION_DIM = 8    # position (3) + quaternion_xyzw (4) + gripper (1)
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Keyframe extraction (PerAct heuristic + commanded gripper fix)
 # ---------------------------------------------------------------------------
 
-def extract_joint_actions(obs_list) -> tuple[np.ndarray, np.ndarray]:
-    """Extract joint_position_action from stepjam RLBench demos.
+def _get_grip_cmd(obs):
+    """Get commanded gripper state from joint_position_action if available.
 
-    Action at time t = joint_position_action from obs at t+1
-    (the commanded target the controller was given).
-    Gripper centered: {0,1} → {-1,+1}.
+    obs.gripper_open is unreliable for grasping tasks — the fingers don't
+    fully close around objects, so get_open_amount() reads 1.0 even when
+    the gripper was commanded to close. joint_position_action[-1] is the
+    actual commanded target.
+    """
+    jpa = obs.misc.get("joint_position_action", None)
+    if jpa is not None:
+        return jpa[-1]
+    return float(obs.gripper_open)
 
-    Proprio = [joint_positions(7), gripper_centered(1)] (observed, not commanded).
+
+def _is_stopped(obs_list, i, obs, stopped_buffer, delta=0.1):
+    """Check if robot is stopped at timestep i (PerAct heuristic)."""
+    next_is_not_final = i == (len(obs_list) - 2)
+    grip_i = _get_grip_cmd(obs)
+    grip_next = _get_grip_cmd(obs_list[i + 1]) if i < len(obs_list) - 1 else grip_i
+    grip_prev = _get_grip_cmd(obs_list[i - 1]) if i > 0 else grip_i
+    grip_prev2 = _get_grip_cmd(obs_list[i - 2]) if i > 1 else grip_prev
+    gripper_state_no_change = (
+        i < (len(obs_list) - 2) and
+        (grip_i == grip_next and grip_i == grip_prev and grip_prev2 == grip_prev))
+    small_delta = np.allclose(obs.joint_velocities, 0, atol=delta)
+    stopped = (stopped_buffer <= 0 and small_delta and
+               (not next_is_not_final) and gripper_state_no_change)
+    return stopped
+
+
+def keypoint_discovery(obs_list, stopping_delta=0.1):
+    """Discover keypoints using PerAct's heuristic + commanded gripper fix.
+
+    Finds timesteps where:
+    - Gripper command changes (from joint_position_action[-1])
+    - Robot is stopped (joint velocities near zero)
+    - Episode ends
 
     Returns:
-        actions: [T-1, 8] float32 [joint_targets(7), gripper_centered(1)]
-        proprio: [T, 8] float32 [joint_positions(7), gripper_centered(1)]
+        List of keypoint timestep indices.
     """
-    T = len(obs_list)
-    assert T >= 2, "Need at least 2 timesteps"
+    episode_keypoints = []
+    prev_grip = _get_grip_cmd(obs_list[0])
+    stopped_buffer = 0
+    for i, obs in enumerate(obs_list):
+        stopped = _is_stopped(obs_list, i, obs, stopped_buffer, stopping_delta)
+        stopped_buffer = 4 if stopped else stopped_buffer - 1
+        curr_grip = _get_grip_cmd(obs)
+        last = i == (len(obs_list) - 1)
+        if i != 0 and (curr_grip != prev_grip or last or stopped):
+            episode_keypoints.append(i)
+        prev_grip = curr_grip
+    if len(episode_keypoints) > 1 and (episode_keypoints[-1] - 1) == \
+            episode_keypoints[-2]:
+        episode_keypoints.pop(-2)
+    return episode_keypoints
 
-    actions = []
-    for t in range(1, T):
-        obs = obs_list[t]
-        jpa = obs.misc.get("joint_position_action")
-        if jpa is not None:
-            jpa = np.array(jpa, dtype=np.float32)
-            joint_targets = jpa[:7]
-            gripper = jpa[7] if len(jpa) > 7 else float(obs.gripper_open)
-        else:
-            joint_targets = obs.joint_positions.astype(np.float32)
-            gripper = float(obs.gripper_open)
-        gripper_centered = gripper * 2 - 1
-        actions.append(np.concatenate([joint_targets, [gripper_centered]]))
 
-    actions = np.stack(actions)  # (T-1, 8)
-
-    # Proprio: observed joint positions + centered gripper
-    proprio = np.zeros((T, 8), dtype=np.float32)
-    for t, obs in enumerate(obs_list):
-        proprio[t, :7] = obs.joint_positions.astype(np.float32)
-        proprio[t, 7] = float(obs.gripper_open) * 2 - 1
-
-    return actions, proprio
-
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def extract_absolute_actions(
     positions: np.ndarray,
@@ -169,7 +190,12 @@ def extract_absolute_actions(
 
     # Target pose = next timestep's pose
     target_pos = positions[1:]          # [T-1, 3]
-    target_quat = quats_xyzw[1:]       # [T-1, 4]
+    target_quat = quats_xyzw[1:].copy()  # [T-1, 4] xyzw order
+
+    # Canonical quaternion: ensure w > 0 (eliminates double-cover)
+    # quat is [qx, qy, qz, qw], so qw is at index 3
+    neg_mask = target_quat[:, 3] < 0
+    target_quat[neg_mask] = -target_quat[neg_mask]
 
     # Gripper command at current timestep, centered {0,1} → {-1,1}
     gripper_action = (grippers[:-1] * 2 - 1)[:, None].astype(np.float32)  # [T-1, 1]
@@ -247,7 +273,11 @@ def extract_proprio_and_pose(
         quats_xyzw[t] = pose[3:]   # already xyzw
         grippers[t]   = float(obs.gripper_open)
 
-    # EE-centric proprio: [eef_pos(3), eef_quat(4), gripper_centered(1)]
+    # Canonical quaternion for proprio too: ensure w > 0
+    neg_mask = quats_xyzw[:, 3] < 0
+    quats_xyzw[neg_mask] = -quats_xyzw[neg_mask]
+
+    # EE-centric proprio: [eef_pos(3), eef_quat_canonical(4), gripper_centered(1)]
     grip_centered = (grippers * 2 - 1)[:, None].astype(np.float32)  # {0,1} → {-1,1}
     proprio = np.concatenate([positions, quats_xyzw, grip_centered], axis=1)  # [T, 8]
     return positions, quats_xyzw, grippers, proprio
@@ -257,16 +287,100 @@ def extract_proprio_and_pose(
 # Episode conversion
 # ---------------------------------------------------------------------------
 
+def convert_episode_nbp(
+    ep_dir: Path,
+    hdf5_file: h5py.File,
+    demo_key_prefix: str,
+    augment_every_n: int = 5,
+) -> list[str]:
+    """Convert one episode into multiple NBP (Next-Best-Pose) sub-demos.
+
+    Matches robobase's get_nbp_demos: for each starting point (every N steps),
+    create a mini-demo containing [start_obs, keypoint1, keypoint2, ...].
+    Action at each step = absolute EE pose at the next step in the mini-demo
+    (= the next keyframe target, a large movement).
+
+    Returns list of demo keys created.
+    """
+    obs_list = load_low_dim(ep_dir)
+    T = len(obs_list)
+    if T < 2:
+        return []
+
+    positions, quats_xyzw, grippers, proprio = extract_proprio_and_pose(obs_list)
+    imgs_all = load_images_for_episode(ep_dir, T)
+
+    kf_indices = keypoint_discovery(obs_list)
+    if len(kf_indices) < 1:
+        return []
+
+    created_keys = []
+    sub_idx = 0
+
+    for start in range(0, T, augment_every_n):
+        # Find keyframes that come after this starting point
+        remaining_kf = [k for k in kf_indices if k > start]
+        if len(remaining_kf) == 0:
+            continue
+
+        # Build mini-demo indices: [start, kf1, kf2, ...]
+        indices = [start] + remaining_kf
+        K = len(indices)
+
+        # Observations at these indices
+        idx_arr = np.array(indices)
+        imgs = imgs_all[idx_arr]
+        proprio_out = proprio[idx_arr]
+
+        # Actions: target pose at next index in mini-demo
+        # For last step, hold current pose
+        actions = np.zeros((K, ACTION_DIM), dtype=np.float32)
+        for i in range(K - 1):
+            next_t = indices[i + 1]
+            curr_t = indices[i]
+            actions[i, :3] = positions[next_t]
+            actions[i, 3:7] = quats_xyzw[next_t]
+            grip = _get_grip_cmd(obs_list[curr_t])
+            actions[i, 7] = grip * 2 - 1
+        # Last: hold pose
+        last_t = indices[-1]
+        actions[-1, :3] = positions[last_t]
+        actions[-1, 3:7] = quats_xyzw[last_t]
+        actions[-1, 7] = _get_grip_cmd(obs_list[last_t]) * 2 - 1
+
+        demo_key = f"{demo_key_prefix}_s{sub_idx}"
+        grp = create_demo_group(
+            hdf5_file, demo_key, T=K, D_prop=PROPRIO_DIM,
+            action_dim=ACTION_DIM, image_dtype=np.uint8,
+        )
+        grp["images"][:] = imgs
+        grp["actions"][:] = actions
+        grp["proprio"][:] = proprio_out
+        grp["view_present"][:] = _VIEW_PRESENT
+
+        created_keys.append(demo_key)
+        sub_idx += 1
+
+    return created_keys
+
+
 def convert_episode(
     ep_dir: Path,
     hdf5_file: h5py.File,
     demo_key: str,
-    use_joint_actions: bool = False,
+    keyframes: bool = False,
 ) -> bool:
     """Convert one RLBench episode. Returns False and skips if too short.
 
-    Stores T-1 timesteps: at each t we have obs[t] paired with action
-    targeting pose at t+1.
+    Dense mode (keyframes=False):
+        Stores T-1 timesteps: at each t we have obs[t] paired with action
+        targeting pose at t+1.
+
+    Keyframe mode (keyframes=True):
+        Detects keypoints (gripper changes, velocity stops, endpoint).
+        Stores only keyframe observations. Action at keyframe i = EE pose
+        at keyframe i+1, with gripper command from keyframe i.
+        Last keyframe's action = its own pose (hold position).
     """
     obs_list = load_low_dim(ep_dir)
     T = len(obs_list)
@@ -274,26 +388,54 @@ def convert_episode(
         print(f"  [SKIP] {demo_key}: only {T} timestep(s)")
         return False
 
-    if use_joint_actions:
-        actions, proprio = extract_joint_actions(obs_list)
-        proprio_trimmed = proprio[:-1]
-    else:
-        positions, quats_xyzw, grippers, proprio = extract_proprio_and_pose(obs_list)
-        actions = extract_absolute_actions(positions, quats_xyzw, grippers)
-        proprio_trimmed = proprio[:-1]
-
-    # Images: [T, K, H, W, 3] uint8 -> keep only first T-1 (paired with actions)
+    positions, quats_xyzw, grippers, proprio = extract_proprio_and_pose(obs_list)
     imgs_all = load_images_for_episode(ep_dir, T)
-    imgs = imgs_all[:-1]  # [T-1, K, H, W, 3]
 
-    T_out = T - 1
+    if not keyframes:
+        # Dense mode: T-1 actions
+        actions = extract_absolute_actions(positions, quats_xyzw, grippers)
+        imgs = imgs_all[:-1]
+        proprio_out = proprio[:-1]
+    else:
+        # Keyframe mode: subsample to keypoints only
+        kf_indices = keypoint_discovery(obs_list)
+        K = len(kf_indices)
+        if K < 2:
+            print(f"  [SKIP] {demo_key}: only {K} keyframe(s)")
+            return False
+
+        # Observations at keyframe timesteps
+        kf_idx = np.array(kf_indices)
+        imgs = imgs_all[kf_idx]         # [K, K_cam, H, W, 3]
+        proprio_out = proprio[kf_idx]   # [K, 8]
+
+        # Actions: target EE pose at next keyframe, gripper from current
+        # For the last keyframe, action = hold current pose
+        actions = np.zeros((K, ACTION_DIM), dtype=np.float32)
+        for i in range(K - 1):
+            next_idx = kf_indices[i + 1]
+            curr_idx = kf_indices[i]
+            actions[i, :3] = positions[next_idx]
+            actions[i, 3:7] = quats_xyzw[next_idx]
+            # Use commanded gripper, centered {0,1} → {-1,1}
+            grip = _get_grip_cmd(obs_list[curr_idx])
+            actions[i, 7] = grip * 2 - 1
+        # Last keyframe: hold pose, use its own gripper command
+        last_idx = kf_indices[-1]
+        actions[-1, :3] = positions[last_idx]
+        actions[-1, 3:7] = quats_xyzw[last_idx]
+        actions[-1, 7] = _get_grip_cmd(obs_list[last_idx]) * 2 - 1
+
+        print(f"    {demo_key}: {T} steps -> {K} keyframes (indices: {kf_indices})")
+
+    T_out = actions.shape[0]
     grp = create_demo_group(
         hdf5_file, demo_key, T=T_out, D_prop=PROPRIO_DIM,
         action_dim=ACTION_DIM, image_dtype=np.uint8,
     )
     grp["images"][:] = imgs
     grp["actions"][:] = actions
-    grp["proprio"][:] = proprio_trimmed
+    grp["proprio"][:] = proprio_out
     grp["view_present"][:] = _VIEW_PRESENT
 
     return True
@@ -320,7 +462,8 @@ def convert_task(
     output_path: str,
     train_frac: float = 0.9,
     val_dir: str | None = None,
-    use_joint_actions: bool = False,
+    keyframes: bool = False,
+    nbp: bool = False,
 ) -> None:
     """Convert all episodes for one task.
 
@@ -372,22 +515,39 @@ def convert_task(
         valid_keys = []
         demo_idx = 0
 
+        if nbp:
+            print(f"Mode: NBP (Next-Best-Pose sub-demos, augment every 5 steps)")
+        elif keyframes:
+            print(f"Mode: KEYFRAME (extracting keypoints only)")
+
         for ep_dir in train_ep_dirs:
-            demo_key = f"demo_{demo_idx}"
-            print(f"  [train] {demo_key} <- {ep_dir.name}")
-            ok = convert_episode(ep_dir, f, demo_key,
-                                 use_joint_actions=use_joint_actions)
-            if ok:
-                train_keys.append(demo_key)
+            if nbp:
+                prefix = f"demo_{demo_idx}"
+                print(f"  [train] {prefix}_s* <- {ep_dir.name}")
+                keys = convert_episode_nbp(ep_dir, f, prefix)
+                train_keys.extend(keys)
+                print(f"    -> {len(keys)} sub-demos")
+            else:
+                demo_key = f"demo_{demo_idx}"
+                print(f"  [train] {demo_key} <- {ep_dir.name}")
+                ok = convert_episode(ep_dir, f, demo_key, keyframes=keyframes)
+                if ok:
+                    train_keys.append(demo_key)
             demo_idx += 1
 
         for ep_dir in val_ep_dirs:
-            demo_key = f"demo_{demo_idx}"
-            print(f"  [valid] {demo_key} <- {ep_dir.name}")
-            ok = convert_episode(ep_dir, f, demo_key,
-                                 use_joint_actions=use_joint_actions)
-            if ok:
-                valid_keys.append(demo_key)
+            if nbp:
+                prefix = f"demo_{demo_idx}"
+                print(f"  [valid] {prefix}_s* <- {ep_dir.name}")
+                keys = convert_episode_nbp(ep_dir, f, prefix)
+                valid_keys.extend(keys)
+                print(f"    -> {len(keys)} sub-demos")
+            else:
+                demo_key = f"demo_{demo_idx}"
+                print(f"  [valid] {demo_key} <- {ep_dir.name}")
+                ok = convert_episode(ep_dir, f, demo_key, keyframes=keyframes)
+                if ok:
+                    valid_keys.append(demo_key)
             demo_idx += 1
 
         write_mask(f, "train", train_keys)
@@ -436,12 +596,20 @@ def main():
              "Ignored when --val-input is provided.",
     )
     parser.add_argument(
-        "--joint-actions", action="store_true",
-        help="Use joint_position_action from stepjam demos instead of EE poses.",
+        "--keyframes", action="store_true",
+        help="Extract keyframes only (PerAct heuristic: gripper changes + "
+             "velocity stops). Reduces ~170 steps to ~5-7 keyframes per demo.",
+    )
+    parser.add_argument(
+        "--nbp", action="store_true",
+        help="NBP (Next-Best-Pose) mode: create multiple sub-demos per episode, "
+             "each starting at a different point with keyframe targets. "
+             "Matches robobase's get_nbp_demos for END_EFFECTOR_POSE training.",
     )
     args = parser.parse_args()
     convert_task(args.input, args.output, train_frac=args.train_frac,
-                 val_dir=args.val_input, use_joint_actions=args.joint_actions)
+                 val_dir=args.val_input, keyframes=args.keyframes,
+                 nbp=args.nbp)
 
 
 if __name__ == "__main__":

@@ -86,3 +86,18 @@ class EMAModel:
         # verify that iterating over module and then parameters is identical to parameters recursively.
         # assert old_all_dataptrs == all_dataptrs
         self.optimization_step += 1
+
+    def store(self, parameters):
+        """Save current model parameters for later restore."""
+        self._stored = [p.clone() for p in parameters]
+
+    def restore(self, parameters):
+        """Restore previously stored parameters."""
+        for p, stored in zip(parameters, self._stored):
+            p.data.copy_(stored.data)
+        del self._stored
+
+    def copy_to(self, parameters):
+        """Copy EMA weights into the given parameters."""
+        for p, ema_p in zip(parameters, self.averaged_model.parameters()):
+            p.data.copy_(ema_p.data)

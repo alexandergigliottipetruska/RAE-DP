@@ -1,14 +1,20 @@
 """RLBench environment wrapper for evaluation.
 
-Uses JointPosition (absolute) + Discrete gripper control.
-Actions are 8D: [joint_targets(7), gripper(1)].
-Gripper: 0=closed, 1=open (raw RLBench Discrete format).
+Wraps an RLBench Environment to implement the BaseManipulationEnv interface.
+Extracts 4 camera views (front, left_shoulder, right_shoulder, wrist),
+resizes to 224x224, returns float [0,1] images (NO ImageNet normalization —
+policy handles it internally via Stage1Bridge, matching RobomimicWrapper).
 
-Proprio is [joint_positions(7), gripper_centered(1)] = 8D.
-Gripper centered: {0,1} → {-1,+1} for training symmetry.
+Actions are 8D [pos(3), quat_xyzw(4), gripper(1)]. Gripper is centered
+{-1,1} in training data; thresholded at 0 here for OMPL Discrete() mode.
 
-Validated via GT replay: 100% success on open_drawer with
-joint_position_action from stepjam RLBench demos.
+Proprio is EE-centric: [eef_pos(3), eef_quat_xyzw(4), gripper_centered(1)] = 8D,
+matching the action space for direct proprio→action correspondence.
+
+Uses OMPL motion planning (EndEffectorPoseViaPlanning) to reach each target
+pose, matching RVT-2 / CoA evaluation approach.
+
+Requires CoppeliaSim (WSL2 or remote Linux).
 """
 
 import numpy as np
@@ -16,6 +22,8 @@ from PIL import Image
 
 from data_pipeline.envs.base_env import BaseManipulationEnv
 
+# Camera mapping: RLBench uses all 4 slots
+# slot 0: front, slot 1: left_shoulder, slot 2: right_shoulder, slot 3: wrist
 _CAMERA_ATTRS = {
     0: "front_rgb",
     1: "left_shoulder_rgb",
@@ -23,6 +31,7 @@ _CAMERA_ATTRS = {
     3: "wrist_rgb",
 }
 
+# Task name -> RLBench task class name
 TASK_CLASS_MAP = {
     "close_jar": "CloseJar",
     "open_drawer": "OpenDrawer",
@@ -40,40 +49,84 @@ TASK_CLASS_MAP = {
 
 
 def _process_image(img_hwc: np.ndarray, target_size: int = 224) -> np.ndarray:
-    """Resize uint8 HWC → float32 CHW [0,1]."""
+    """Resize + HWC->CHW. Returns float32 [0,1] (no ImageNet normalization).
+
+    Matches RobomimicWrapper — policy handles ImageNet norm internally.
+
+    Args:
+        img_hwc: uint8 [H, W, 3] image from RLBench.
+
+    Returns:
+        float32 [3, H, W] in [0, 1] range.
+    """
     if img_hwc.shape[0] != target_size or img_hwc.shape[1] != target_size:
         img_hwc = np.array(
             Image.fromarray(img_hwc).resize(
                 (target_size, target_size), Image.LANCZOS
             )
         )
-    return np.moveaxis(img_hwc.astype(np.float32) / 255.0, -1, -3)
+    img_float = img_hwc.astype(np.float32) / 255.0
+    return np.moveaxis(img_float, -1, -3)  # [3, H, W]
 
 
 class RLBenchWrapper(BaseManipulationEnv):
-    """RLBench eval wrapper using JointPosition control."""
+    """Wraps an RLBench environment for policy evaluation.
 
-    def __init__(self, task_name: str, image_size: int = 224,
-                 headless: bool = True, cameras: bool = True):
+    Passes absolute EE pose actions to the sim via OMPL motion planning,
+    matching the RVT-2 / CoA evaluation approach.
+
+    Args:
+        task_name: Task name (must be in TASK_CLASS_MAP).
+        image_size: Target image size (default 224).
+        headless: Run CoppeliaSim headless (default True).
+        cameras: Enable vision sensors (default True). Set False for
+                 headless WSL2 to avoid OpenGL segfault.
+    """
+
+    def __init__(
+        self,
+        task_name: str,
+        image_size: int = 224,
+        headless: bool = True,
+        cameras: bool = True,
+    ):
         from rlbench.environment import Environment
         from rlbench.action_modes.action_mode import MoveArmThenGripper
-        from rlbench.action_modes.arm_action_modes import JointPosition
+        from rlbench.action_modes.arm_action_modes import EndEffectorPoseViaPlanning
         from rlbench.action_modes.gripper_action_modes import Discrete
         from rlbench.observation_config import ObservationConfig
 
         self._task_name = task_name
         self._image_size = image_size
+        self._cameras = cameras
 
         if task_name not in TASK_CLASS_MAP:
-            raise ValueError(f"Unknown task: {task_name}. "
-                             f"Supported: {list(TASK_CLASS_MAP.keys())}")
+            raise ValueError(
+                f"Unknown task: {task_name}. "
+                f"Supported: {list(TASK_CLASS_MAP.keys())}"
+            )
+
+        from pyrep.const import RenderMode
 
         obs_config = ObservationConfig()
         obs_config.set_all_low_dim(True)
         obs_config.set_all_high_dim(cameras)
 
+        # Use OpenGL (not OpenGL3) for Xvfb compatibility
+        if cameras:
+            for cam in [obs_config.front_camera, obs_config.left_shoulder_camera,
+                        obs_config.right_shoulder_camera, obs_config.wrist_camera]:
+                cam.render_mode = RenderMode.OPENGL
+
+        # Stock OMPL motion planning — matches replay_rlbench.py and RVT-2.
+        # EndEffectorPoseViaPlanning defaults: absolute_mode=True, ignore_collisions=True
+        action_mode = MoveArmThenGripper(
+            arm_action_mode=EndEffectorPoseViaPlanning(),
+            gripper_action_mode=Discrete(),
+        )
+
         self._env = Environment(
-            action_mode=MoveArmThenGripper(JointPosition(), Discrete()),
+            action_mode=action_mode,
             obs_config=obs_config,
             headless=headless,
         )
@@ -82,9 +135,11 @@ class RLBenchWrapper(BaseManipulationEnv):
         import rlbench.tasks
         task_cls = getattr(rlbench.tasks, TASK_CLASS_MAP[task_name])
         self._task = self._env.get_task(task_cls)
+
         self._last_obs = None
 
     def seed(self, seed: int) -> None:
+        """Set seed for next reset. RLBench uses np.random for variation sampling."""
         np.random.seed(seed)
 
     def reset(self) -> dict:
@@ -93,19 +148,31 @@ class RLBenchWrapper(BaseManipulationEnv):
         return {"descriptions": descriptions}
 
     def step(self, action: np.ndarray) -> tuple[dict, float, bool, dict]:
-        """Execute one step. Action: [joint_targets(7), gripper(1)]."""
-        joint_targets = action[:7].astype(np.float64)
-        gripper = 1.0 if float(action[7]) > 0.5 else 0.0
-        rlbench_action = np.concatenate([joint_targets, [gripper]])
+        """Execute one absolute EE pose action via OMPL motion planning.
+
+        Args:
+            action: [8] float32 — [position(3), quaternion_xyzw(4), gripper(1)]
+        """
+        position = action[:3].astype(np.float64)
+        quat_xyzw = action[3:7].astype(np.float64)
+        gripper = 1.0 if float(action[7]) > 0.0 else 0.0
+
+        # Build action: [x, y, z, qx, qy, qz, qw, gripper]
+        abs_action = np.concatenate([position, quat_xyzw, [gripper]])
 
         try:
-            obs, reward, terminate = self._task.step(rlbench_action)
-        except Exception as e:
-            return {}, 0.0, True, {"success": False, "error": str(e)}
+            obs, reward, terminate = self._task.step(abs_action)
+        except Exception:
+            # Planning can fail for unreachable poses.
+            # Treat as episode termination with no success.
+            return {}, 0.0, True, {"success": False}
         self._last_obs = obs
-        return {}, float(reward), bool(terminate), {"success": reward > 0}
+
+        success = reward == 1.0
+        return {}, float(reward), bool(terminate), {"success": success}
 
     def get_multiview_images(self) -> np.ndarray:
+        """Return [1, 4, 3, 224, 224] with all 4 camera slots filled."""
         result = np.zeros(
             (1, 4, 3, self._image_size, self._image_size), dtype=np.float32
         )
@@ -116,11 +183,13 @@ class RLBenchWrapper(BaseManipulationEnv):
         return result
 
     def get_proprio(self) -> np.ndarray:
-        """Return [1, 8]: joint_positions(7) + gripper_centered(1)."""
+        """Return [1, 8] proprio: eef_pos(3) + eef_quat_xyzw(4) + gripper_centered(1)."""
         obs = self._last_obs
+        pose = obs.gripper_pose  # [7]: x y z qx qy qz qw
         proprio = np.concatenate([
-            obs.joint_positions.astype(np.float32),
-            [float(obs.gripper_open) * 2 - 1],
+            pose[:3].astype(np.float32),              # eef_pos [3]
+            pose[3:].astype(np.float32),              # eef_quat xyzw [4]
+            [float(obs.gripper_open) * 2 - 1],        # grip centered {-1,1} [1]
         ])
         return proprio.reshape(1, -1)
 

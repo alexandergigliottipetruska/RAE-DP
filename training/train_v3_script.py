@@ -57,6 +57,8 @@ def main():
     parser.add_argument("--warmup_steps", type=int, default=1000)
     parser.add_argument("--grad_clip", type=float, default=0.0,
                         help="Gradient clipping (0=disabled, matching Chi)")
+    parser.add_argument("--grad_accum_steps", type=int, default=1,
+                        help="Gradient accumulation steps (effective batch = batch_size * accum)")
     parser.add_argument("--lr_schedule", type=str, default="cosine",
                         choices=["cosine", "constant"],
                         help="LR schedule: cosine (default) or constant (warmup then flat)")
@@ -91,6 +93,8 @@ def main():
                         help="'custom'=RobomimicWrapper, 'robomimic'=Chi's pipeline, 'rlbench'=OMPL eval, 'joint'=joint-space eval")
     parser.add_argument("--eval_exec_horizon", type=int, default=8,
                         help="T_a: actions executed before re-planning (robomimic=8, RLBench=1)")
+    parser.add_argument("--keyframe_eval", action="store_true",
+                        help="Keyframe eval: predict full sequence once, execute all through OMPL")
 
     # Action space
     parser.add_argument("--action_space", type=str, default=None,
@@ -100,8 +104,9 @@ def main():
 
     # Normalization mode
     parser.add_argument("--norm_mode", type=str, default="minmax",
-                        choices=["minmax", "zscore", "chi"],
-                        help="'minmax'=all dims [-1,1], 'chi'=pos minmax + rot6d/grip identity")
+                        choices=["minmax", "zscore", "chi", "minmax_margin"],
+                        help="'minmax'=all dims [-1,1], 'chi'=pos minmax + rot6d/grip identity, "
+                             "'minmax_margin'=all dims with 0.2 margin (robobase-style)")
 
     # Denoiser backbone
     parser.add_argument("--denoiser_type", type=str, default="transformer",
@@ -112,6 +117,10 @@ def main():
     parser.add_argument("--spatial_pool_size", type=int, default=1,
                         choices=[1, 4, 7, 14],
                         help="Spatial pool: 1=avg pool (default), 4/7/14=spatial tokens per camera")
+    parser.add_argument("--use_spatial_softmax", action="store_true",
+                        help="Use SpatialSoftmax pooling (Chi-style spatial coordinates) instead of avg pool")
+    parser.add_argument("--n_cond_layers", type=int, default=0,
+                        help="Self-attention encoder layers for conditioning (0=MLP, >0=transformer encoder)")
 
     # Augmentation — periodic token refresh with random crop
     parser.add_argument("--augment_refresh_every", type=int, default=0,
@@ -207,6 +216,7 @@ def main():
         num_epochs=args.num_epochs,
         warmup_steps=args.warmup_steps,
         grad_clip=args.grad_clip,
+        grad_accum_steps=args.grad_accum_steps,
         lr_schedule=args.lr_schedule,
         weight_decay_denoiser=args.weight_decay_denoiser,
         weight_decay_encoder=args.weight_decay_encoder,
@@ -223,6 +233,7 @@ def main():
         eval_full_episodes=args.eval_full_episodes,
         eval_mode=args.eval_mode,
         eval_exec_horizon=args.eval_exec_horizon,
+        keyframe_eval=args.keyframe_eval,
         val_ratio=args.val_ratio,
         val_seed=args.val_seed,
         no_amp=args.no_amp,
@@ -230,6 +241,8 @@ def main():
         seed=args.seed,
         denoiser_type=args.denoiser_type,
         spatial_pool_size=args.spatial_pool_size,
+        use_spatial_softmax=args.use_spatial_softmax,
+        n_cond_layers=args.n_cond_layers,
         augment_refresh_every=args.augment_refresh_every,
         random_crop_size=args.random_crop_size,
         image_hdf5=args.image_hdf5,
