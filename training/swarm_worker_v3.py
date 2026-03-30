@@ -38,7 +38,10 @@ SESSION_TS = datetime.now().strftime("%Y%m%d_%H%M")
 
 def upload_to_hf_and_clean(trial_dir, trial_number):
     """Sends best.pt and logs to HF, then wipes local /tmp."""
-    api = HfApi()
+    
+    upload_token = SWARM_CFG.get("hf_upload_token", SWARM_CFG.get("hf_token"))
+    api = HfApi(token=upload_token)
+
     repo_id = SWARM_CFG["project"].get("hf_repo_id", "Denass04/RAEDiTRobotics-stage3-sweeps") 
     study_name = SWARM_CFG["project"]["study_name"]
     path_in_repo = os.path.join(f"{study_name}_{SESSION_TS}", f"trial_{trial_number}")
