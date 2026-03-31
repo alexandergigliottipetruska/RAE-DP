@@ -214,7 +214,7 @@ class V3Config:
     # Logging & checkpointing
     log_every: int = 100
     save_every_epoch: int = 10
-    eval_every_epoch: int = 5           # eval every 5 epochs (first 50), then 50
+    eval_every_epoch: int = 10000           # eval every 5 epochs (first 50), then 50
     save_dir: str = "checkpoints/v3"
 
     # Eval
@@ -223,7 +223,7 @@ class V3Config:
     eval_episodes: int = 10
     eval_full_episodes: int = 50        # episodes for full eval (with video)
     eval_full_every_epoch: int = 50     # full eval + video every N epochs
-    eval_n_envs: int = 10              # max parallel envs for eval
+    eval_n_envs: int = 20              # max parallel envs for eval
     eval_image_size: int = 84
     eval_mode: str = "custom"           # "custom" | "robomimic" | "rlbench"
     eval_exec_horizon: int = 8          # T_a: robomimic=8, RLBench=1

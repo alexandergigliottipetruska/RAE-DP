@@ -83,11 +83,11 @@ def main():
                         help="Quick eval episodes (every eval_every_epoch)")
     parser.add_argument("--eval_full_episodes", type=int, default=50,
                         help="Full eval episodes with video (every eval_full_every_epoch)")
-    parser.add_argument("--eval_every_epoch", type=int, default=10)
+    parser.add_argument("--eval_every_epoch", type=int, default=10000)
     parser.add_argument("--eval_full_every_epoch", type=int, default=50,
                         help="Full eval + video interval")
-    parser.add_argument("--eval_n_envs", type=int, default=10,
-                        help="Max parallel envs for eval (default: 10)")
+    parser.add_argument("--eval_n_envs", type=int, default=20,
+                        help="Max parallel envs for eval (default: 20)")
     parser.add_argument("--eval_mode", type=str, default="custom",
                         choices=["custom", "robomimic", "rlbench", "joint"],
                         help="'custom'=RobomimicWrapper, 'robomimic'=Chi's pipeline, 'rlbench'=OMPL eval, 'joint'=joint-space eval")
