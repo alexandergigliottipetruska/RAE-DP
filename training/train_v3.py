@@ -253,6 +253,7 @@ def save_v3_checkpoint(
     optimizer: torch.optim.Optimizer,
     ema_model,
     val_metrics: dict,
+    config=None,
 ):
     """Save V3 checkpoint — trainable components only (skip frozen encoder)."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -266,6 +267,8 @@ def save_v3_checkpoint(
         "optimizer": optimizer.state_dict(),
         "val_metrics": val_metrics,
     }
+    if config is not None:
+        ckpt["config"] = {k: v for k, v in config.__dict__.items()}
     if ema_model is not None:
         ckpt["ema"] = {
             "averaged_model": ema_model.averaged_model.state_dict(),
@@ -591,8 +594,11 @@ def train_v3(
                  config.d_model, config.n_head, config.n_layers, config.ac_dim)
         log.info("Optim: lr=%.1e, betas=%s, WD_den=%.1e, WD_enc=%.1e",
                  config.lr, config.betas, config.weight_decay_denoiser, config.weight_decay_encoder)
-        log.info("EMA: power=%.2f, Diffusion: %d train / %d eval steps",
-                 config.ema_power, config.train_diffusion_steps, config.eval_diffusion_steps)
+        if config.use_flow_matching:
+            log.info("EMA: power=%.2f, L1 Flow (2-step, L1 loss)", config.ema_power)
+        else:
+            log.info("EMA: power=%.2f, Diffusion: %d train / %d eval steps",
+                     config.ema_power, config.train_diffusion_steps, config.eval_diffusion_steps)
         log.info("Precision: AMP=%s, compile=%s", not config.no_amp, not config.no_compile)
         log.info("=" * 60)
 
@@ -723,6 +729,7 @@ def train_v3(
                 save_v3_checkpoint(
                     os.path.join(config.save_dir, f"epoch_{epoch:03d}.pt"),
                     epoch, global_step, policy, optimizer, ema_model, avg,
+                    config=config,
                 )
 
             # Per-timestep diagnostics (t0, denoised-MSE) — every eval_every_epoch + full eval epochs
@@ -759,6 +766,7 @@ def train_v3(
                                 os.path.join(config.save_dir, "best_success.pt"),
                                 epoch, global_step, policy, optimizer, ema_model,
                                 {**avg, "success_rate": sr},
+                                config=config,
                             )
                             log.info("New best success rate: %.1f%% (epoch %d)", sr * 100, epoch)
                     except Exception as e:
@@ -788,6 +796,7 @@ def train_v3(
                                 os.path.join(config.save_dir, "best_success.pt"),
                                 epoch, global_step, policy, optimizer, ema_model,
                                 {**avg, "success_rate": sr},
+                                config=config,
                             )
                             log.info("New best success rate: %.1f%% (epoch %d)", sr * 100, epoch)
                     except Exception as e:
@@ -800,6 +809,7 @@ def train_v3(
                     save_v3_checkpoint(
                         os.path.join(config.save_dir, "best.pt"),
                         epoch, global_step, policy, optimizer, ema_model, avg,
+                        config=config,
                     )
                     last_best_save_epoch = epoch
                 else:
