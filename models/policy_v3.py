@@ -161,7 +161,7 @@ class PolicyDiTv3(nn.Module):
         obs_cond = self.obs_encoder(adapted, batch["proprio"], view_present)
         return obs_cond
 
-    def compute_loss(self, batch: dict) -> torch.Tensor:
+    def compute_loss(self, batch: dict, lambda_recon: float = 0.0) -> dict:
         """Training loss: DDPM epsilon-prediction or L1 Flow sample-prediction.
 
         Args:
@@ -170,48 +170,64 @@ class PolicyDiTv3(nn.Module):
                 - actions: (B, T_pred, ac_dim) normalized
                 - proprio: (B, T_obs, proprio_dim) normalized
                 - view_present: (B, K) bool
+                - images_target: (B, T_obs, K, 3, H, W) optional, for co-training
+            lambda_recon: weight for reconstruction loss (0=disabled).
 
         Returns:
-            Scalar loss.
+            dict with 'loss' (scalar for backward), 'policy' (float),
+            'recon' (float), for logging.
         """
         actions = batch["actions"]  # (B, T_pred, ac_dim) normalized [-1, 1]
         B = actions.shape[0]
         device = actions.device
+        view_present = batch["view_present"]
 
-        # 1. Encode observations (training: images are pre-normalized by dataset)
-        obs_cond = self._encode_obs(batch, pre_normalized=True)
+        # 1. Encode observations — capture adapted tokens for reconstruction
+        if "cached_tokens" in batch:
+            adapted = self.bridge.adapt(batch["cached_tokens"], view_present)
+        else:
+            adapted = self.bridge.encode(
+                batch["images_enc"], view_present, pre_normalized=True
+            )
 
+        # adapted: (B, T_o, K, 196, 512)
+        obs_cond = self.obs_encoder(adapted, batch["proprio"], view_present)
+
+        # 2. Diffusion loss
         if self.use_flow_matching:
-            # L1 Sample Flow (Song et al. 2025)
             noise = torch.randn_like(actions)
-
-            # Logistic-normal + 1% uniform timestep sampling
             t = self.logistic_normal.sample((B,))[:, 0].to(device)
             uni_t = torch.rand_like(t)
             mask = torch.rand_like(t) < 0.01
             t[mask] = uni_t[mask]
-
-            # Linear interpolation: x_t = t * x₁ + (1-t) * x₀
             t_expand = t[:, None, None]
             noisy_actions = t_expand * actions + (1 - t_expand) * noise
-
-            # Model predicts clean sample x₁; scale t for sinusoidal embedding
             timesteps = (t * 1000).long()
             x_pred = self.denoiser(noisy_actions, timesteps, obs_cond)
-
-            # L1 loss on sample prediction
-            loss = F.l1_loss(x_pred, actions)
+            loss_policy = F.l1_loss(x_pred, actions)
         else:
-            # DDPM epsilon prediction (Chi's original)
             timesteps = torch.randint(
                 0, self.train_diffusion_steps, (B,), device=device, dtype=torch.long
             )
             noise = torch.randn_like(actions)
             noisy_actions = self.noise_scheduler.add_noise(actions, noise, timesteps)
             noise_pred = self.denoiser(noisy_actions, timesteps, obs_cond)
-            loss = F.mse_loss(noise_pred, noise)
+            loss_policy = F.mse_loss(noise_pred, noise)
 
-        return loss
+        # 3. Reconstruction loss (co-training)
+        loss_recon = torch.tensor(0.0, device=device)
+        if lambda_recon > 0 and "images_target" in batch and self.bridge.decoder is not None:
+            loss_recon = self.bridge.compute_recon_loss(
+                adapted, batch["images_target"], view_present,
+            )
+
+        loss = loss_policy + lambda_recon * loss_recon
+
+        return {
+            "loss": loss,
+            "policy": loss_policy.item(),
+            "recon": loss_recon.item(),
+        }
 
     @torch.no_grad()
     def predict_action(self, obs_dict: dict) -> torch.Tensor:
@@ -267,6 +283,6 @@ class PolicyDiTv3(nn.Module):
 
         return actions
 
-    def forward(self, batch: dict) -> torch.Tensor:
+    def forward(self, batch: dict) -> dict:
         """Alias for compute_loss (used by training loop)."""
-        return self.compute_loss(batch)
+        return self.compute_loss(batch, lambda_recon=getattr(self, '_lambda_recon', 0.0))
