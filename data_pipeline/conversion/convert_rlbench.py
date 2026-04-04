@@ -61,6 +61,7 @@ import pickle
 import sys
 from pathlib import Path
 
+import cv2
 import h5py
 import numpy as np
 from PIL import Image
@@ -230,9 +231,7 @@ def load_images_for_episode(ep_dir: Path, T: int) -> np.ndarray:
                 break
             frame = np.array(Image.open(img_path).convert("RGB"))
             if frame.shape[:2] != (H, W):
-                frame = np.array(
-                    Image.fromarray(frame).resize((W, H), Image.LANCZOS)
-                )
+                frame = cv2.resize(frame, (W, H), interpolation=cv2.INTER_LINEAR)
             out[t, slot] = frame
 
     return out  # [T, K, H, W, 3] uint8
@@ -271,7 +270,7 @@ def extract_proprio_and_pose(
         pose = obs.gripper_pose  # [7]: x y z qx qy qz qw
         positions[t]  = pose[:3]
         quats_xyzw[t] = pose[3:]   # already xyzw
-        grippers[t]   = float(obs.gripper_open)
+        grippers[t]   = _get_grip_cmd(obs)
 
     # Canonical quaternion for proprio too: ensure w > 0
     neg_mask = quats_xyzw[:, 3] < 0
@@ -446,10 +445,13 @@ def convert_episode(
 # ---------------------------------------------------------------------------
 
 def _collect_episodes(task_root: Path) -> list[Path]:
-    """Find all episode directories under task_root/all_variations/episodes/."""
+    """Find all episode directories under task_root/{all_variations,variation0}/episodes/."""
     ep_parent = task_root / "all_variations" / "episodes"
     if not ep_parent.exists():
-        raise FileNotFoundError(f"Expected episodes at {ep_parent}")
+        # stepjam dataset_generator uses variation0/ instead of all_variations/
+        ep_parent = task_root / "variation0" / "episodes"
+    if not ep_parent.exists():
+        raise FileNotFoundError(f"Expected episodes at {task_root}/{{all_variations,variation0}}/episodes")
     return sorted(
         [d for d in ep_parent.iterdir()
          if d.is_dir() and (d / "low_dim_obs.pkl").exists()],
@@ -575,7 +577,8 @@ def main():
         choices=["close_jar", "open_drawer", "slide_block_to_color_target",
                  "put_item_in_drawer", "stack_cups", "place_shape_in_shape_sorter",
                  "meat_off_grill", "turn_tap", "push_buttons", "reach_and_drag",
-                 "place_wine_at_rack_location", "sweep_to_dustpan_of_size"],
+                 "place_wine_at_rack_location", "sweep_to_dustpan_of_size",
+                 "sweep_to_dustpan", "reach_target"],
     )
     parser.add_argument(
         "--input", required=True,

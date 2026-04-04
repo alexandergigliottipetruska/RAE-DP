@@ -90,6 +90,8 @@ def main():
                         help="Full eval + video interval")
     parser.add_argument("--eval_n_envs", type=int, default=20,
                         help="Max parallel envs for eval (default: 20)")
+    parser.add_argument("--eval_image_size", type=int, default=84,
+                        help="Render size for eval (84 for robomimic, 224 for rlbench)")
     parser.add_argument("--eval_mode", type=str, default="custom",
                         choices=["custom", "robomimic", "rlbench", "joint"],
                         help="'custom'=RobomimicWrapper, 'robomimic'=Chi's pipeline, 'rlbench'=OMPL eval, 'joint'=joint-space eval")
@@ -205,6 +207,17 @@ def main():
             args.norm_mode = "chi"
         args.no_rot6d = False  # enable rot6d conversion (7D aa → 10D)
 
+    # Auto-set eval defaults for rlbench (matching training pipeline)
+    if args.eval_mode == "rlbench":
+        if "--eval_image_size" not in sys.argv:
+            args.eval_image_size = 224  # RLBench demos stored at 224; robomimic at 84
+        if "--eval_exec_horizon" not in sys.argv:
+            args.eval_exec_horizon = 1  # re-predict every step (CoA/robobase consensus)
+        if "--n_active_cams" not in sys.argv:
+            args.n_active_cams = 4      # RLBench has 4 cameras
+        if "--proprio_dim" not in sys.argv:
+            args.proprio_dim = 8        # RLBench: pos(3)+quat(4)+grip(1)
+
     # Apply --dit_preset defaults (explicit flags still override)
     if args.dit_preset:
         presets = {
@@ -286,6 +299,7 @@ def main():
         eval_every_epoch=args.eval_every_epoch,
         eval_full_every_epoch=args.eval_full_every_epoch,
         eval_n_envs=args.eval_n_envs,
+        eval_image_size=args.eval_image_size,
         eval_task=args.eval_task,
         eval_hdf5=args.eval_hdf5 or args.hdf5[0],
         eval_episodes=args.eval_episodes,

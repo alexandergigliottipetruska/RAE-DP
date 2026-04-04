@@ -45,6 +45,8 @@ TASK_CLASS_MAP = {
     "reach_and_drag": "ReachAndDrag",
     "place_wine_at_rack_location": "PlaceWineAtRackLocation",
     "sweep_to_dustpan_of_size": "SweepToDustpanOfSize",
+    "sweep_to_dustpan": "SweepToDustpan",
+    "reach_target": "ReachTarget",
 }
 
 
@@ -60,10 +62,9 @@ def _process_image(img_hwc: np.ndarray, target_size: int = 224) -> np.ndarray:
         float32 [3, H, W] in [0, 1] range.
     """
     if img_hwc.shape[0] != target_size or img_hwc.shape[1] != target_size:
-        img_hwc = np.array(
-            Image.fromarray(img_hwc).resize(
-                (target_size, target_size), Image.LANCZOS
-            )
+        import cv2
+        img_hwc = cv2.resize(
+            img_hwc, (target_size, target_size), interpolation=cv2.INTER_LINEAR
         )
     img_float = img_hwc.astype(np.float32) / 255.0
     return np.moveaxis(img_float, -1, -3)  # [3, H, W]
@@ -89,6 +90,7 @@ class RLBenchWrapper(BaseManipulationEnv):
         image_size: int = 224,
         headless: bool = True,
         cameras: bool = True,
+        use_ik: bool = False,
     ):
         from rlbench.environment import Environment
         from rlbench.action_modes.action_mode import MoveArmThenGripper
@@ -118,10 +120,16 @@ class RLBenchWrapper(BaseManipulationEnv):
                         obs_config.right_shoulder_camera, obs_config.wrist_camera]:
                 cam.render_mode = RenderMode.OPENGL
 
-        # Stock OMPL motion planning — matches replay_rlbench.py and RVT-2.
-        # EndEffectorPoseViaPlanning defaults: absolute_mode=True, ignore_collisions=True
+        if use_ik:
+            # Direct IK — no OMPL path planning, closest to Robomimic's OSC
+            from rlbench.action_modes.arm_action_modes import EndEffectorPoseViaIK
+            arm_action_mode = EndEffectorPoseViaIK()
+        else:
+            # Stock OMPL motion planning — matches RVT-2 / CoA eval
+            arm_action_mode = EndEffectorPoseViaPlanning()
+
         action_mode = MoveArmThenGripper(
-            arm_action_mode=EndEffectorPoseViaPlanning(),
+            arm_action_mode=arm_action_mode,
             gripper_action_mode=Discrete(),
         )
 

@@ -34,7 +34,9 @@ TASK_MAX_STEPS = {
     "place_wine_at_rack_location": 250,
     "push_buttons": 250,
     "sweep_to_dustpan_of_size": 250,
+    "sweep_to_dustpan": 250,
     "turn_tap": 200,
+    "reach_target": 100,
 }
 
 
@@ -251,9 +253,23 @@ def _run_episode(
                     for j in range(1, min(exec_horizon, len(actions_8d))):
                         pending_actions.append(actions_8d[j])
 
-        if step_count == 0:
-            log.debug("  step=0 action: %s",
-                       np.array2string(action, precision=4, suppress_small=True))
+        if step_count < 5 or step_count % 20 == 0:
+            log.info("  step=%d predicted action: pos=%s quat=%s grip=%.2f",
+                     step_count,
+                     np.array2string(action[:3], precision=4, suppress_small=True),
+                     np.array2string(action[3:7], precision=4, suppress_small=True),
+                     action[7])
+            if demo is not None and step_count < len(demo) - 1:
+                gt_obs = demo[step_count + 1]
+                gt_pos = gt_obs.gripper_pose[:3]
+                gt_quat = gt_obs.gripper_pose[3:]
+                gt_grip = gt_obs.misc.get("joint_position_action", [0]*8)[-1]
+                pos_err = np.linalg.norm(action[:3] - gt_pos)
+                log.info("  step=%d GT action:        pos=%s quat=%s grip=%.2f  |  pos_err=%.4f",
+                         step_count,
+                         np.array2string(gt_pos, precision=4, suppress_small=True),
+                         np.array2string(gt_quat, precision=4, suppress_small=True),
+                         gt_grip, pos_err)
 
         try:
             obs, reward, done, info = env.step(action)
@@ -416,6 +432,7 @@ def evaluate_v3_rlbench(
     demos: list = None,
     exec_horizon: int = 1,
     keyframe_eval: bool = False,
+    use_ik: bool = False,
     norm_mode: str = "chi",
     _cached_env=None,
 ) -> tuple:
@@ -448,11 +465,12 @@ def evaluate_v3_rlbench(
     # Reuse cached env or create new one
     env = _cached_env
     if env is None:
-        log.info("Creating RLBenchWrapper for %s (headless=%s)...", task, headless)
+        log.info("Creating RLBenchWrapper for %s (headless=%s, ik=%s)...", task, headless, use_ik)
         env = RLBenchWrapper(
             task_name=task,
             image_size=image_size,
             headless=headless,
+            use_ik=use_ik,
         )
 
     action_stats = norm_stats["actions"]
@@ -513,6 +531,7 @@ def evaluate_v3_rlbench(
                 pass
             env = RLBenchWrapper(
                 task_name=task, image_size=image_size, headless=headless,
+                use_ik=use_ik,
             )
         except Exception as e:
             signal.alarm(0)
@@ -562,6 +581,8 @@ if __name__ == "__main__":
                         help="Actions to execute per prediction (T_a). Higher = less gripper flip-flop")
     parser.add_argument("--keyframe_eval", action="store_true",
                         help="Keyframe mode: predict full sequence once, execute all through OMPL")
+    parser.add_argument("--use_ik", action="store_true",
+                        help="Use EndEffectorPoseViaIK instead of OMPL planning (faster, closer to Robomimic)")
     parser.add_argument("--device", default="cuda")
     args = parser.parse_args()
 
@@ -574,12 +595,38 @@ if __name__ == "__main__":
 
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
 
+    # Auto-detect architecture from checkpoint config
+    ckpt_peek = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
+    cfg = ckpt_peek.get("config", {})
+    def _get(key, default):
+        return cfg.get(key, default)
+
+    spatial_pool_size = _get("spatial_pool_size", 1)
+    n_cond_layers = _get("n_cond_layers", 0)
+    use_flow_matching = _get("use_flow_matching", False)
+    denoiser_type = _get("denoiser_type", "transformer")
+    d_model = _get("d_model", 256)
+    n_head = _get("n_head", 4)
+    n_layers = _get("n_layers", 8)
+    norm_mode = _get("norm_mode", "chi")
+    T_obs = _get("T_obs", 1)
+
+    log.info("Auto-detected: spatial=%d, ncond=%d, fm=%s, d=%d, norm=%s",
+             spatial_pool_size, n_cond_layers, use_flow_matching, d_model, norm_mode)
+    del ckpt_peek
+
     # Build model
     bridge = Stage1Bridge(checkpoint_path=args.stage1_checkpoint)
     policy = PolicyDiTv3(
         bridge=bridge, ac_dim=args.ac_dim,
         proprio_dim=args.proprio_dim, n_active_cams=args.n_active_cams,
         T_pred=args.T_pred,
+        d_model=d_model, n_head=n_head, n_layers=n_layers,
+        spatial_pool_size=spatial_pool_size,
+        n_cond_layers=n_cond_layers,
+        use_flow_matching=use_flow_matching,
+        denoiser_type=denoiser_type,
+        T_obs=T_obs,
     ).to(device)
 
     # Load checkpoint + EMA weights
@@ -625,6 +672,8 @@ if __name__ == "__main__":
         demos=demo_list,
         exec_horizon=args.exec_horizon,
         keyframe_eval=args.keyframe_eval,
+        norm_mode=norm_mode,
+        use_ik=args.use_ik,
     )
     env.close()
 

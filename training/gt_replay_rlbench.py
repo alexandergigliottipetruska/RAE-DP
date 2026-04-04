@@ -63,6 +63,8 @@ TASK_CLASS_MAP = {
     "reach_and_drag": "ReachAndDrag",
     "place_wine_at_rack_location": "PlaceWineAtRackLocation",
     "sweep_to_dustpan_of_size": "SweepToDustpanOfSize",
+    "sweep_to_dustpan": "SweepToDustpan",
+    "reach_target": "ReachTarget",
 }
 
 
@@ -478,14 +480,71 @@ def run_ompl_mode(args):
 # CLI
 # ---------------------------------------------------------------------------
 
+def run_ik_mode(args):
+    """Run GT replay in IK mode — direct IK, no OMPL planning (closest to Robomimic OSC)."""
+    from data_pipeline.envs.rlbench_wrapper import RLBenchWrapper
+
+    ep_dirs = get_episode_dirs(args.pickles)
+    ep_dirs = ep_dirs[:args.num_demos]
+    log.info("Found %d episode pickles in %s", len(ep_dirs), args.pickles)
+
+    log.info("Creating RLBenchWrapper for %s (IK mode)...", args.task)
+    env = RLBenchWrapper(task_name=args.task, headless=True, cameras=False, use_ik=True)
+
+    results = []
+    for i, ep_dir in enumerate(ep_dirs):
+        with open(ep_dir / "low_dim_obs.pkl", "rb") as fh:
+            demo = pickle.load(fh)
+
+        try:
+            descriptions, obs = safe_reset_to_demo(env._task, demo)
+        except Exception as e:
+            log.warning("Demo %d (%s): reset failed: %s", i, ep_dir.name, e)
+            results.append({"success": False, "steps": 0})
+            continue
+
+        env._last_obs = obs
+
+        # Extract dense EE pose actions from demo observations
+        # Use joint_position_action[-1] for gripper command (not gripper_open,
+        # which reports observed state and lags behind for tasks like close_jar)
+        actions = []
+        for t in range(1, len(demo)):
+            obs_t = demo[t]
+            pose = obs_t.gripper_pose  # [x, y, z, qx, qy, qz, qw]
+            jpa = obs_t.misc.get("joint_position_action", None)
+            if jpa is not None:
+                grip = 1.0 if jpa[-1] > 0.5 else -1.0
+            else:
+                grip = 1.0 if obs_t.gripper_open else -1.0
+            actions.append(np.concatenate([pose, [grip]]))
+
+        actions = np.array(actions, dtype=np.float32)
+        log.info("  IK replay: %d actions from demo observations", len(actions))
+
+        result = gt_replay_demo(env, actions)
+        results.append(result)
+        status = "SUCCESS" if result["success"] else "FAIL"
+        n_success = sum(r["success"] for r in results)
+        log.info("Demo %d/%d (%s): %s (%d steps) | Running: %d/%d (%.0f%%)",
+                 i + 1, len(ep_dirs), ep_dir.name, status, result["steps"],
+                 n_success, len(results), 100 * n_success / len(results))
+
+    env.close()
+    n_success = sum(r["success"] for r in results)
+    log.info("=== %s GT replay (ik): %d/%d (%.1f%%) ===",
+             args.task, n_success, len(results), 100 * n_success / len(results))
+
+
 def main():
     parser = argparse.ArgumentParser(description="GT replay for RLBench")
     parser.add_argument("--task", required=True, choices=list(TASK_CLASS_MAP.keys()))
     parser.add_argument("--mode", default="keyframe",
-                        choices=["joint", "keyframe", "ompl"],
+                        choices=["joint", "keyframe", "ompl", "ik"],
                         help="joint: replay joint_position_action (>=90%%, needs RLBench demos). "
                              "keyframe: replay gripper-transition EE poses via OMPL (~70%%). "
-                             "ompl: replay ALL EE poses via OMPL (~50%%).")
+                             "ompl: replay ALL EE poses via OMPL (~50%%). "
+                             "ik: replay EE poses via direct IK, no planning (closest to Robomimic).")
     parser.add_argument("--hdf5", help="HDF5 path (required for ompl mode)")
     parser.add_argument("--pickles", required=True,
                         help="Path to raw episodes dir with low_dim_obs.pkl files")
@@ -497,6 +556,8 @@ def main():
         run_joint_mode(args)
     elif args.mode == "keyframe":
         run_keyframe_mode(args)
+    elif args.mode == "ik":
+        run_ik_mode(args)
     else:
         run_ompl_mode(args)
 
