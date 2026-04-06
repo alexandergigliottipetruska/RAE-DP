@@ -32,17 +32,19 @@ Use `--rot6d` to recompute norm stats in 10D rot6d format (required for V3).
 
 ```bash
 python -m training.train_v3_script \
-    --hdf5 data/robomimic/square/ph_abs_v15_tokens_fp32_none.hdf5 \
+    --hdf5 /virtual/csc415user/data/robomimic/lift/ph_abs_v15_tokens_fp32_none.hdf5 \
     --stage1_checkpoint checkpoints/stage1_full_rtx5090_0312_0400/best.pt \
-    --save_dir checkpoints/v3_square_fm \
-    --eval_task square --eval_mode robomimic \
+    --save_dir checkpoints/v3_lift_d256_0405 \
+    --eval_task lift --eval_mode robomimic \
     --no_amp --no_compile --norm_mode chi \
     --use_flow_matching \
     --spatial_pool_size 7 --n_cond_layers 4 \
     --p_drop_attn 0.05 \
+    --d_model 256 \
     --num_epochs 3000 --batch_size 64 --seed 42 \
-    --eval_full_every_epoch 20 --eval_full_episodes 200 \
-    --eval_n_envs 20 --val_ratio 0.02
+    --eval_full_every_epoch 1 --eval_full_episodes 50 \
+    --eval_n_envs 25 --val_ratio 0.02  --save_every_epoch 0 --no_save_best  \
+    --save_rolling_every 10
 ```
 
 ### Standard DDPM training (Chi's recipe)
