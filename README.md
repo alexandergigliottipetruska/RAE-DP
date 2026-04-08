@@ -1,6 +1,6 @@
 <div align="center">
 
-# RAEDiT: Robust Diffusion Transformer Policy with Representation Autoencoder Visual Encoding
+# RAE-DP: Robust Diffusion Transformer Policy with Representation Autoencoder Visual Encoding
 
 **Robust Multi-View Diffusion Policy with Frozen ViT and RAE-Decoder Regularization**
 
