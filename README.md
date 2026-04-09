@@ -246,15 +246,35 @@ PYTHONPATH=. python training/precompute_tokens.py \
 
 ### Phase 1 -- RAE Pretraining (Adapter + Decoder)
 
-Train the adapter and ViT decoder jointly on the reconstruction objective:
+Pre-trains the adapter (1024->512 MLP) and ViT decoder using L1 + LPIPS + GAN reconstruction losses. This ensures the adapter retains spatial detail before policy training.
+
+**Option A: Download pre-trained weights (recommended)**
+
+We provide pre-trained Phase 1 weights trained on 4 Robomimic + 8 RLBench tasks for 24 epochs:
+
+```bash
+# TODO: Replace with actual HuggingFace link
+wget -O checkpoints/stage1/epoch_024.pt <HUGGINGFACE_LINK>
+```
+
+**Option B: Train from scratch**
+
+Requires unified HDF5 files for all tasks you want to train on. Uses a 3-phase schedule: reconstruction-only (epochs 0-5), discriminator warm-up (6-7), full GAN (8+). Approximately 1.5 hours per epoch on an RTX 4080.
 
 ```bash
 PYTHONPATH=. python training/train_stage1_script.py \
     --hdf5 data/rlbench/close_jar/close_jar_dense.hdf5 \
+            data/rlbench/open_drawer/open_drawer_dense.hdf5 \
+            data/rlbench/sweep_to_dustpan/sweep_to_dustpan_dense.hdf5 \
+            data/robomimic/lift/ph_abs_v15.hdf5 \
+            data/robomimic/can/ph_abs_v15.hdf5 \
+            data/robomimic/square/ph_abs_v15.hdf5 \
     --save_dir checkpoints/stage1 \
     --num_epochs 25 \
     --batch_size 10
 ```
+
+For single-task or quick experiments, even 7 epochs of reconstruction-only training (before GAN) provides a good adapter initialization.
 
 ### Phase 2 -- Policy Training
 
@@ -264,7 +284,7 @@ The recommended configuration (matching our best results):
 PYTHONPATH=. python training/train_v3_script.py \
     --hdf5 data/robomimic/can/ph_abs_v15_tokens_fp32_none.hdf5 \
     --eval_hdf5 data/robomimic/can/ph_abs_v15.hdf5 \
-    --stage1_checkpoint checkpoints/stage1/best.pt \
+    --stage1_checkpoint checkpoints/stage1/epoch_024.pt \
     --eval_task can \
     --d_model 512 \
     --num_epochs 3000 --stop_after_epochs 100 \
