@@ -632,14 +632,21 @@ if __name__ == "__main__":
     # Load checkpoint + EMA weights
     ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
 
-    if "ema" in ckpt and "averaged_model" in ckpt["ema"]:
-        policy.load_state_dict(ckpt["ema"]["averaged_model"], strict=False)
+    def _strip(sd):
+        prefix = "_orig_mod."
+        return {k.removeprefix(prefix): v for k, v in sd.items()} if any(
+            k.startswith(prefix) for k in sd) else sd
+
+    if "ema" in ckpt:
+        ema = ckpt["ema"]
+        if "averaged_model" in ema:
+            policy.load_state_dict(ema["averaged_model"], strict=False)
+        elif "denoiser" in ema:
+            policy.denoiser.load_state_dict(_strip(ema["denoiser"]))
+            policy.obs_encoder.load_state_dict(_strip(ema["obs_encoder"]))
+            policy.bridge.adapter.load_state_dict(_strip(ema["adapter"]))
         log.info("Loaded EMA weights for eval")
     elif "denoiser" in ckpt:
-        def _strip(sd):
-            prefix = "_orig_mod."
-            return {k.removeprefix(prefix): v for k, v in sd.items()} if any(
-                k.startswith(prefix) for k in sd) else sd
         policy.denoiser.load_state_dict(_strip(ckpt["denoiser"]))
         policy.obs_encoder.load_state_dict(_strip(ckpt["obs_encoder"]))
         policy.bridge.adapter.load_state_dict(_strip(ckpt["adapter"]))

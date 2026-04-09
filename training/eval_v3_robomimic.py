@@ -797,8 +797,16 @@ if __name__ == "__main__":
         policy.load_state_dict(ckpt.get("policy", ckpt.get("model", {})), strict=False)
 
     # Load EMA weights directly into policy (Chi's approach)
-    if "ema" in ckpt and "averaged_model" in ckpt["ema"]:
-        policy.load_state_dict(ckpt["ema"]["averaged_model"], strict=False)
+    if "ema" in ckpt:
+        ema = ckpt["ema"]
+        if "averaged_model" in ema:
+            # Old format: full model state_dict
+            policy.load_state_dict(ema["averaged_model"], strict=False)
+        elif "denoiser" in ema:
+            # New format: component-wise (no frozen encoder)
+            policy.denoiser.load_state_dict(_strip(ema["denoiser"]))
+            policy.obs_encoder.load_state_dict(_strip(ema["obs_encoder"]))
+            policy.bridge.adapter.load_state_dict(_strip(ema["adapter"]))
         log.info("Loaded EMA weights into policy for eval")
     policy.eval()
 

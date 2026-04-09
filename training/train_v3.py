@@ -291,11 +291,17 @@ def save_v3_checkpoint(
     if config is not None:
         ckpt["config"] = {k: v for k, v in config.__dict__.items()}
     if ema_model is not None:
-        ckpt["ema"] = {
-            "averaged_model": ema_model.averaged_model.state_dict(),
+        ema_avg = ema_model.averaged_model
+        ema_sd = {
+            "denoiser": ema_avg.denoiser.state_dict(),
+            "obs_encoder": ema_avg.obs_encoder.state_dict(),
+            "adapter": ema_avg.bridge.adapter.state_dict(),
             "optimization_step": ema_model.optimization_step,
             "decay": ema_model.decay,
         }
+        if ema_avg.bridge.decoder is not None:
+            ema_sd["decoder"] = ema_avg.bridge.decoder.state_dict()
+        ckpt["ema"] = ema_sd
     torch.save(ckpt, path)
     log.info("Saved V3 checkpoint: %s (epoch %d, step %d)", path, epoch, global_step)
 
@@ -363,16 +369,25 @@ def load_v3_checkpoint(
     if ema_model is not None and "ema" in ckpt:
         ema_state = ckpt["ema"]
         if "averaged_model" in ema_state:
-            # Chi's EMA format — resize pos emb if needed
+            # OLD format: full model state_dict (includes frozen encoder)
             ema_sd = ema_state["averaged_model"]
             _resize_pos_emb(ema_model.averaged_model, ema_sd,
                             key="denoiser.cond_pos_emb")
-            ema_model.averaged_model.load_state_dict(ema_sd)
-            ema_model.optimization_step = ema_state.get("optimization_step", 0)
-            ema_model.decay = ema_state.get("decay", 0.0)
+            ema_model.averaged_model.load_state_dict(ema_sd, strict=False)
+        elif "denoiser" in ema_state:
+            # NEW format: component-wise (no frozen encoder)
+            ema_avg = ema_model.averaged_model
+            ema_denoiser_sd = _strip(ema_state["denoiser"])
+            _resize_pos_emb(ema_avg.denoiser, ema_denoiser_sd, key="cond_pos_emb")
+            ema_avg.denoiser.load_state_dict(ema_denoiser_sd)
+            ema_avg.obs_encoder.load_state_dict(_strip(ema_state["obs_encoder"]))
+            ema_avg.bridge.adapter.load_state_dict(_strip(ema_state["adapter"]))
+            if "decoder" in ema_state and ema_avg.bridge.decoder is not None:
+                ema_avg.bridge.decoder.load_state_dict(_strip(ema_state["decoder"]))
         else:
-            # Old diffusers EMA format — skip (incompatible)
-            log.warning("Old diffusers EMA format detected, skipping EMA load (will re-init)")
+            log.warning("Unknown EMA format, skipping EMA load (will re-init)")
+        ema_model.optimization_step = ema_state.get("optimization_step", 0)
+        ema_model.decay = ema_state.get("decay", 0.0)
 
     log.info("Loaded V3 checkpoint from epoch %d, step %d: %s",
              ckpt["epoch"], ckpt["global_step"], path)
@@ -472,6 +487,7 @@ def train_v3(
 
     # --- EMA: Chi's implementation (separate model copy) ---
     ema_policy = copy.deepcopy(policy)
+    ema_policy.bridge.encoder = policy.bridge.encoder  # share frozen encoder, don't duplicate
     ema_policy.eval()
     ema_policy.requires_grad_(False)
     ema_model = EMAModel(
