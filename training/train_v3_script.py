@@ -88,8 +88,8 @@ def main():
     parser.add_argument("--eval_every_epoch", type=int, default=10000)
     parser.add_argument("--eval_full_every_epoch", type=int, default=50,
                         help="Full eval + video interval")
-    parser.add_argument("--eval_n_envs", type=int, default=20,
-                        help="Max parallel envs for eval (default: 20)")
+    parser.add_argument("--eval_n_envs", type=int, default=25,
+                        help="Max parallel envs for eval (default: 25)")
     parser.add_argument("--eval_image_size", type=int, default=84,
                         help="Render size for eval (84 for robomimic, 224 for rlbench)")
     parser.add_argument("--eval_mode", type=str, default="custom",
