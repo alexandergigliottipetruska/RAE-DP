@@ -146,35 +146,99 @@ huggingface-cli login
 
 ---
 
-## Data Preparation
+## Data Preparation (Robomimic)
 
-### 1. Convert raw demonstrations to unified HDF5
+The pipeline converts raw robomimic demos into training-ready HDF5 with pre-computed DINOv3 tokens:
+
+```
+demo_v15.hdf5 (35 MB, raw states, no images)
+  -> [Step 1: extract observations]  (needs MuJoCo renderer)
+image_v15.hdf5 (~500 MB, 84x84 images, delta actions)
+  -> [Step 2: convert to absolute actions]  (needs robosuite 1.5)
+image_abs_v15.hdf5 (~500 MB, absolute EE poses)
+  -> [Step 3: convert to unified schema]  (pure Python)
+ph_abs_v15.hdf5 (~513 MB, 224x224, 7D absolute actions)
+  -> [Step 4: pre-compute tokens]  (needs GPU + DINOv3)
+ph_abs_v15_tokens_fp32_none.hdf5 (~25 GB, cached encoder tokens)
+```
+
+### Step 0: Download raw demos
 
 ```bash
-# Robomimic
-PYTHONPATH=. python data_pipeline/conversion/convert_robomimic.py \
-    --task lift --variant ph --config data_pipeline/configs/paths.yaml
+# Using robomimic's download script (recommended):
+python -m robomimic.scripts.download_datasets \
+    --tasks lift can square --dataset_types ph --hdf5_types raw \
+    --download_dir data/raw/robomimic
 
-# RLBench
+# Or download manually from HuggingFace: robomimic/robomimic_datasets
+```
+
+### Step 1: Extract observations from states
+
+Replays each demo through robosuite to render camera images and extract proprioception. Requires a display or headless rendering (e.g., `xvfb-run`).
+
+```bash
+python -m robomimic.scripts.dataset_states_to_obs \
+    --dataset data/raw/robomimic/lift/demo_v15.hdf5 \
+    --output_name image_v15.hdf5 \
+    --done_mode 2 \
+    --camera_names agentview robot0_eye_in_hand \
+    --camera_height 84 --camera_width 84
+```
+
+This creates `image_v15.hdf5` in the same directory. Actions remain in delta format.
+
+### Step 2: Convert delta actions to absolute EE poses
+
+Our system requires absolute end-effector poses (not deltas). This replays demos through the robosuite 1.5 OSC_POSE controller and extracts world-frame goal positions/orientations.
+
+```bash
+PYTHONPATH=. python training/generate_abs_actions_v15.py \
+    --input data/raw/robomimic/lift/image_v15.hdf5 \
+    --output data/raw/robomimic/lift/image_abs_v15.hdf5
+```
+
+Output actions are 7D: `[world_pos(3), axis_angle(3), gripper(1)]`.
+
+### Step 3: Convert to unified HDF5 schema
+
+Resizes images from 84x84 to 224x224, maps cameras to slots, extracts proprioception, and computes normalization statistics.
+
+```bash
+PYTHONPATH=. python -m data_pipeline.conversion.convert_robomimic \
+    data/raw/robomimic/lift/image_abs_v15.hdf5 \
+    data/robomimic/lift/ph_abs_v15.hdf5 \
+    --task lift
+```
+
+### Step 4: Pre-compute DINOv3 tokens (9x training speedup)
+
+Runs the frozen DINOv3-L encoder once on all images and caches the 196x1024D tokens. Training then reads tokens directly instead of running the 303M-param encoder each step (66s vs 597s per epoch).
+
+```bash
+PYTHONPATH=. python training/precompute_tokens.py \
+    --hdf5 data/robomimic/lift/ph_abs_v15.hdf5 \
+    --preset fp32-none \
+    --rot6d
+```
+
+The `--rot6d` flag recomputes normalization statistics in 10D format (required for training). The script creates a `*_tokens_fp32_none.hdf5` file alongside the original. Use `--preset bf16-none` for half the disk space. The training data loader auto-detects cached tokens.
+
+## Data Preparation (RLBench)
+
+```bash
+# Convert RLBench demos to unified HDF5:
 PYTHONPATH=. python data_pipeline/conversion/convert_rlbench.py \
     --task open_drawer \
     --input /path/to/rlbench/train/open_drawer \
     --val-input /path/to/rlbench/val/open_drawer \
     --output data/rlbench/open_drawer/open_drawer_dense.hdf5
-```
 
-### 2. Pre-compute DINOv3 tokens (9x training speedup)
-
-This runs the frozen DINOv3-L encoder once on all images and caches the tokens. Training then reads tokens directly from HDF5 instead of running the 303M-param encoder each step.
-
-```bash
+# Pre-compute tokens (same as Robomimic step 4):
 PYTHONPATH=. python training/precompute_tokens.py \
-    --hdf5 data/robomimic/square/ph_abs_v15.hdf5 \
-    --preset fp32-none \
-    --rot6d
+    --hdf5 data/rlbench/open_drawer/open_drawer_dense.hdf5 \
+    --preset fp32-none --rot6d
 ```
-
-The script creates a `*_tokens_fp32_none.hdf5` file alongside the original. Use `--preset bf16-none` for half the disk space with minimal quality loss. The training data loader auto-detects cached tokens.
 
 ---
 
