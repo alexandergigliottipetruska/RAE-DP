@@ -74,7 +74,9 @@ class EMAModel:
                 # if data_ptr != 0:
                 #     all_dataptrs.add(data_ptr)
 
-                if isinstance(module, _BatchNorm):
+                if param.data_ptr() == ema_param.data_ptr():
+                    continue  # shared parameter (e.g. frozen encoder), skip
+                elif isinstance(module, _BatchNorm):
                     # skip batchnorms
                     ema_param.copy_(param.to(dtype=ema_param.dtype).data)
                 elif not param.requires_grad:

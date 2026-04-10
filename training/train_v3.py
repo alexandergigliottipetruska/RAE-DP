@@ -90,9 +90,9 @@ def train_step(
     device = next(policy.parameters()).device
     device_type = device.type
 
-    # Move batch to device
+    # Move batch to device (non_blocking allows overlap with prior GPU compute)
     batch_dev = {
-        k: v.to(device) if isinstance(v, torch.Tensor) else v
+        k: v.to(device, non_blocking=True) if isinstance(v, torch.Tensor) else v
         for k, v in batch.items()
     }
 
@@ -254,6 +254,7 @@ class V3Config:
     # Precision — Chi runs fp32, no torch.compile
     no_amp: bool = False                # disable BF16 autocast
     no_compile: bool = False            # disable torch.compile
+    cache_in_ram: bool = False          # pre-load dataset into RAM
 
     # Reproducibility
     seed: int = 0                       # global seed (0 = random)
@@ -593,22 +594,32 @@ def train_v3(
         demo_keys_override=valid_keys_override,
     )
 
+    # Optional: pre-load dataset into RAM to eliminate HDF5 I/O
+    _use_torch_cache = getattr(config, 'cache_in_ram', False)
+    if _use_torch_cache:
+        train_ds.cache_as_torch_tensors()
+        valid_ds.cache_as_torch_tensors()
+        # With torch tensors in RAM, workers add IPC overhead with no benefit
+        config.num_workers = 0
+        log.info("Torch tensor cache active: setting num_workers=0, pin_memory=False")
+
     train_sampler = DistributedSampler(train_ds, shuffle=True) if distributed else None
     persistent = config.num_workers > 0
 
     from data_pipeline.datasets.stage3_dataset import worker_init_open_handles
 
+    _pin = (device.type == "cuda") and not _use_torch_cache  # pin_memory wastes time with torch cache
     train_loader = DataLoader(
         train_ds, batch_size=config.batch_size,
         shuffle=(train_sampler is None), sampler=train_sampler,
-        num_workers=config.num_workers, pin_memory=(device.type == "cuda"),
+        num_workers=config.num_workers, pin_memory=_pin,
         drop_last=True, persistent_workers=persistent,
         prefetch_factor=3 if config.num_workers > 0 else None,
         worker_init_fn=worker_init_open_handles if config.num_workers > 0 else None,
     )
     valid_loader = DataLoader(
         valid_ds, batch_size=config.batch_size, shuffle=False,
-        num_workers=config.num_workers, pin_memory=(device.type == "cuda"),
+        num_workers=config.num_workers, pin_memory=_pin,
         persistent_workers=persistent,
         worker_init_fn=worker_init_open_handles if config.num_workers > 0 else None,
     )
@@ -731,6 +742,11 @@ def train_v3(
             tqdm(train_loader, desc=f"Epoch {epoch}", leave=True)
             if is_main else train_loader
         )
+
+        # Prefetch batches to GPU when using torch cache (overlaps collation + H2D with compute)
+        if _use_torch_cache:
+            from training.prefetch_iterator import PrefetchIterator
+            loader_iter = PrefetchIterator(loader_iter, device)
 
         accum = config.grad_accum_steps
         loss_scale = 1.0 / accum

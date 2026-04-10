@@ -33,6 +33,21 @@ from models.denoiser_dit import DiTDenoiser
 from models.stage1_bridge import Stage1Bridge
 
 
+def _gpu_zero_pad_compact_tokens(batch: dict) -> torch.Tensor:
+    """Zero-pad compact tokens (K_active → K_full) on GPU if needed."""
+    cached = batch["cached_tokens"]
+    if "K_full" in batch:
+        K_full = batch["K_full"]
+        if isinstance(K_full, torch.Tensor):
+            K_full = K_full[0].item()
+        if cached.shape[2] < K_full:
+            active_idx = batch["active_cam_indices"][0]  # same for all in batch
+            full = cached.new_zeros(*cached.shape[:2], K_full, *cached.shape[3:])
+            full[:, :, active_idx] = cached
+            return full
+    return cached
+
+
 class PolicyDiTv3(nn.Module):
     """V3 diffusion policy with pluggable denoiser backbone.
 
@@ -163,8 +178,9 @@ class PolicyDiTv3(nn.Module):
         view_present = batch["view_present"]
 
         if "cached_tokens" in batch:
+            cached = _gpu_zero_pad_compact_tokens(batch)
             # Precomputed: run adapter only (skip frozen encoder)
-            adapted = self.bridge.adapt(batch["cached_tokens"], view_present)
+            adapted = self.bridge.adapt(cached, view_present)
         else:
             # Online: full encoder → LN → adapter
             adapted = self.bridge.encode(
@@ -210,7 +226,8 @@ class PolicyDiTv3(nn.Module):
 
         # 1. Encode observations — capture adapted tokens for reconstruction
         if "cached_tokens" in batch:
-            adapted = self.bridge.adapt(batch["cached_tokens"], view_present)
+            cached = _gpu_zero_pad_compact_tokens(batch)
+            adapted = self.bridge.adapt(cached, view_present)
         else:
             adapted = self.bridge.encode(
                 batch["images_enc"], view_present, pre_normalized=True

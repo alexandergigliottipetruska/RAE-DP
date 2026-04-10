@@ -178,6 +178,10 @@ def main():
     parser.add_argument("--stop_after_epochs", type=int, default=0,
                         help="Forcefully terminate training gracefully after this many epochs (without shrinking LR schedule)")
 
+    # Performance
+    parser.add_argument("--cache_in_ram", action="store_true",
+                        help="Pre-load entire dataset into RAM (eliminates HDF5 I/O, needs ~44 GB for Square)")
+
     # Precision (Chi runs fp32, no compile)
 
     parser.add_argument("--no_amp", action="store_true",
@@ -321,6 +325,7 @@ def main():
         val_seed=args.val_seed,
         no_amp=args.no_amp,
         no_compile=args.no_compile,
+        cache_in_ram=args.cache_in_ram,
         seed=args.seed,
         denoiser_type=args.denoiser_type,
         prediction_type=args.prediction_type,

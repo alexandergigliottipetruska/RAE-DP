@@ -44,6 +44,10 @@ rich>=13.0.0
 matplotlib>=3.8.0
 moviepy>=2.0.0
 
+# Evaluation (robomimic env wrappers)
+gym==0.26.2
+dill>=0.3.8
+
 # Testing
 pytest>=8.0.0
 scikit-learn>=1.4.0

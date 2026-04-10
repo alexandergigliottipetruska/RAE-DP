@@ -129,7 +129,10 @@ pip install -r requirements.txt
 
 # Simulation environments (required for training and evaluation)
 pip install robosuite==1.5.2
-pip install -e git+https://github.com/ARISE-Initiative/robomimic.git@e10526b#egg=robomimic
+pip install -e "git+https://github.com/ARISE-Initiative/robomimic.git@e10526b#egg=robomimic"
+
+# robomimic pins old transformers/diffusers — force-reinstall our versions:
+pip install transformers>=5.0.0 diffusers>=0.37.0 huggingface-hub>=1.0.0
 
 # RLBench (optional, requires CoppeliaSim + PyRep)
 pip install git+https://github.com/stepjam/PyRep.git
@@ -139,10 +142,17 @@ pip install git+https://github.com/stepjam/gymnasium.git
 
 ### HuggingFace token (required for DINOv3-L)
 
+DINOv3-L is a gated model. You must first request access at:
+https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m
+
+Once approved (typically 5-10 minutes), create the secrets file:
+
 ```bash
-huggingface-cli login
-# Or create data_pipeline/configs/secrets.yaml with: hf_token: "hf_..."
+mkdir -p configs
+echo 'huggingface_token: "hf_YOUR_TOKEN_HERE"' > configs/secrets.yaml
 ```
+
+Get your token from https://huggingface.co/settings/tokens.
 
 ---
 

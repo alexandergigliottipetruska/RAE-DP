@@ -191,6 +191,110 @@ class Stage3Dataset(Dataset):
                 "Using precomputed tokens for %d/%d files", n_cached, len(self._hdf5_paths)
             )
 
+        # RAM cache: disabled by default, enabled via cache_in_ram() or cache_as_torch_tensors()
+        self._ram_cache = None  # dict of numpy arrays (cache_in_ram)
+        self._torch_cache = None  # dict of torch tensors (cache_as_torch_tensors)
+
+    def cache_in_ram(self):
+        """Pre-load all demo data into RAM to eliminate HDF5 I/O during training.
+
+        Call after construction: `ds.cache_in_ram()`. Loads demos one-by-one
+        to avoid peak memory spikes. Tokens stay in compact form (K_active only).
+        """
+        import logging, gc
+        log = logging.getLogger(__name__)
+        log.info("Caching dataset in RAM...")
+        self._ram_cache = {}
+        total_bytes = 0
+        n_demos = 0
+
+        for file_idx, path in enumerate(self._hdf5_paths):
+            demo_keys = sorted(set(k for fi, k, t in self._index if fi == file_idx))
+            f = h5py.File(path, "r")
+            for demo_key in demo_keys:
+                grp = f[f"data/{demo_key}"]
+                entry = {
+                    "actions": np.array(grp["actions"]),
+                    "proprio": np.array(grp["proprio"]),
+                }
+                if self._cached_per_file[file_idx]:
+                    entry["tokens"] = np.array(grp["tokens"])
+                    if "active_cam_indices" in grp:
+                        entry["active_cam_indices"] = np.array(grp["active_cam_indices"])
+                        entry["K_full"] = int(f.attrs.get("num_cam_slots", 4))
+                else:
+                    entry["images"] = np.array(grp["images"])
+                total_bytes += sum(v.nbytes for v in entry.values() if isinstance(v, np.ndarray))
+                self._ram_cache[(file_idx, demo_key)] = entry
+                n_demos += 1
+
+                if n_demos % 20 == 0:
+                    log.info("  Cached %d demos (%.1f GB)...", n_demos, total_bytes / 1e9)
+            f.close()
+
+        gc.collect()
+        log.info("Cached %d demos (%.1f GB) in RAM", n_demos, total_bytes / 1e9)
+
+    def cache_as_torch_tensors(self):
+        """Pre-load and pre-process all samples as torch tensors.
+
+        This is the fastest cache mode: rot6d conversion, normalization, and
+        temporal padding are done once at init. __getitem__ returns tensor views
+        (~5 us per sample). Tokens stay compact (K_active cameras only).
+
+        Use with num_workers=0 to avoid IPC overhead.
+        """
+        import logging, gc
+        log = logging.getLogger(__name__)
+        log.info("Building torch tensor cache (compact, pre-normalized)...")
+
+        # First pass: load all demo data and pre-process
+        demo_cache = {}  # (file_idx, demo_key) -> {tokens, actions, proprio}
+        total_bytes = 0
+
+        for file_idx, path in enumerate(self._hdf5_paths):
+            demo_keys = sorted(set(k for fi, k, t in self._index if fi == file_idx))
+            is_cached = self._cached_per_file[file_idx]
+            benchmark = self._benchmark_per_file[file_idx]
+            norm = self._norm_per_file[file_idx]
+
+            f = h5py.File(path, "r")
+            for demo_key in demo_keys:
+                grp = f[f"data/{demo_key}"]
+
+                # Actions: load, convert rot6d, normalize — all at once for the full demo
+                actions_np = np.array(grp["actions"], dtype=np.float32)
+                if self.use_rot6d:
+                    if benchmark == "rlbench":
+                        actions_np = convert_actions_quat_to_rot6d(actions_np)
+                    else:
+                        actions_np = convert_actions_to_rot6d(actions_np)
+                actions_np = self._normalize_actions(actions_np, norm["actions"]).astype(np.float32)
+
+                # Proprio: normalize full demo
+                proprio_np = self._normalize_proprio(
+                    np.array(grp["proprio"], dtype=np.float32), norm["proprio"]
+                ).astype(np.float32)
+
+                entry = {
+                    "actions": torch.from_numpy(actions_np),
+                    "proprio": torch.from_numpy(proprio_np),
+                }
+
+                if is_cached:
+                    entry["tokens"] = torch.from_numpy(np.array(grp["tokens"], dtype=np.float32))
+                    if "active_cam_indices" in grp:
+                        entry["active_cam_indices"] = torch.from_numpy(np.array(grp["active_cam_indices"]))
+                        entry["K_full"] = int(f.attrs.get("num_cam_slots", 4))
+
+                total_bytes += sum(t.nelement() * t.element_size() for t in entry.values() if isinstance(t, torch.Tensor))
+                demo_cache[(file_idx, demo_key)] = entry
+            f.close()
+
+        self._torch_cache = demo_cache
+        gc.collect()
+        log.info("Torch tensor cache ready: %d demos, %.1f GB", len(demo_cache), total_bytes / 1e9)
+
     def __len__(self) -> int:
         return len(self._index)
 
@@ -298,7 +402,56 @@ class Stage3Dataset(Dataset):
         T_obs, T_pred = self.T_obs, self.T_pred
         is_cached = self._cached_per_file[file_idx]
 
-        grp, f_handle = self._get_grp(file_idx, demo_key)
+        # --- Fast path: torch tensor cache (pre-normalized, compact tokens) ---
+        if self._torch_cache is not None:
+            entry = self._torch_cache[(file_idx, demo_key)]
+            T_demo = entry["actions"].shape[0]
+
+            # Obs window with start-padding (repeat first frame)
+            obs_start = max(0, t - T_obs + 1)
+            obs_end = max(0, t) + 1
+            proprio = entry["proprio"][obs_start:obs_end]
+            pad_before = T_obs - proprio.shape[0]
+            if pad_before > 0:
+                proprio = torch.cat([proprio[:1].expand(pad_before, -1), proprio], dim=0)
+
+            # Actions window with front/end padding
+            act_start = max(0, t)
+            end = min(t + T_pred, T_demo)
+            actions = entry["actions"][act_start:end]
+            if t < 0:
+                front_pad = min(-t, T_pred)
+                actions = torch.cat([actions[:1].expand(front_pad, -1), actions], dim=0)[:T_pred]
+            if actions.shape[0] < T_pred:
+                pad_len = T_pred - actions.shape[0]
+                actions = torch.cat([actions, actions[-1:].expand(pad_len, -1)], dim=0)
+
+            result = {
+                "actions": actions,
+                "proprio": proprio,
+                "view_present": torch.from_numpy(self._view_present_per_file[file_idx]),
+            }
+
+            if "tokens" in entry:
+                tokens = entry["tokens"][obs_start:obs_end]
+                if pad_before > 0:
+                    tokens = torch.cat([tokens[:1].expand(pad_before, *tokens.shape[1:]), tokens], dim=0)
+                result["cached_tokens"] = tokens
+                # Pass compact token metadata for GPU zero-pad
+                if "active_cam_indices" in entry:
+                    result["active_cam_indices"] = entry["active_cam_indices"]
+                    result["K_full"] = torch.tensor(entry["K_full"], dtype=torch.long)
+
+            return result
+
+        # --- Standard path: RAM cache or HDF5 ---
+        cache_entry = self._ram_cache.get((file_idx, demo_key)) if self._ram_cache else None
+
+        if cache_entry is None:
+            grp, f_handle = self._get_grp(file_idx, demo_key)
+        else:
+            grp = cache_entry  # dict with numpy arrays, same key names
+            f_handle = None
 
         # --- Observations: frames [t - T_obs + 1, ..., t] ---
         obs_start = max(0, t - T_obs + 1)
@@ -315,7 +468,19 @@ class Stage3Dataset(Dataset):
         elif is_cached:
             tokens_slice = grp["tokens"][obs_start : obs_end]  # (<=T_obs, K_active, 196, 1024)
             # Compact tokens: only active views stored, pad back to full K
-            if "active_cam_indices" in grp:
+            if cache_entry is not None:
+                # RAM cache: active_cam_indices stored in entry
+                if "active_cam_indices" in cache_entry:
+                    K_full = cache_entry["K_full"]
+                    if tokens_slice.shape[1] < K_full:
+                        active_idx = cache_entry["active_cam_indices"]
+                        padded = np.zeros(
+                            (*tokens_slice.shape[:1], K_full, *tokens_slice.shape[2:]),
+                            dtype=tokens_slice.dtype,
+                        )
+                        padded[:, active_idx] = tokens_slice
+                        tokens_slice = padded
+            elif "active_cam_indices" in grp:
                 K_full = int(grp.file.attrs.get("num_cam_slots", 4))
                 if tokens_slice.shape[1] < K_full:
                     active_idx = grp["active_cam_indices"][:]
