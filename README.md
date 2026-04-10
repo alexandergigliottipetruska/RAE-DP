@@ -109,7 +109,17 @@ python -m venv venv
 source venv/bin/activate
 ```
 
-### Option B: conda
+### Option B: virtualenv (for lab machines without python3-venv)
+
+```bash
+git clone https://github.com/alexandergigliottipetruska/RAE-DP.git
+cd RAEDiTRobotics
+pip install virtualenv
+virtualenv ~/venv_rlbench
+source ~/venv_rlbench/bin/activate
+```
+
+### Option C: conda
 
 ```bash
 git clone https://github.com/alexandergigliottipetruska/RAE-DP.git
