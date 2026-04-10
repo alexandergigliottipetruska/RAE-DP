@@ -1,92 +1,171 @@
-# NOTE we no longer check out to a branch or pull automatically
+# Distributed Optuna HP sweep for Stage 3 (Square task, bf16 tokens)
+# Usage: python training/swarm_manager_stage3.py start|stop|status|restart_idle
+
 project:
-  study_name: "robotics_stage3_lift_with_success_rate"
-  domain: "utm.utoronto.ca" #important for lab pc distribution
-  project_root: "/student/denassau/CSC415/Project/RAEDiTRobotics"
-  venv_path: "~/sweep_env/bin/activate"
-  git_branch: "stage3_hp-tuning" # The specific branch the manager will pull
-  worker_script: "training/swarm_worker_stage3.py"
+  study_name: "v3_square_bf16_hp_sweep"
+  domain: "utm.utoronto.ca"
+  project_root: "~/RAEDiTRobotics"
+  venv_path: "~/venv_rlbench/bin/activate"
+  worker_script: "training/swarm_worker_v3.py"
   log_directory: "/tmp/swarm_logs"
-  
-  # Storage Quota Safety
+
+  # Storage Quota Safety (redirect caches to local /tmp, not NFS)
   hf_cache_dir: "/tmp/hf_cache"
   torch_cache_dir: "/tmp/torch_cache"
-  scratch_dir: "/tmp/denassau_stage3"
+  scratch_dir: "/tmp/optuna_trials"
   hf_repo_id: "Denass04/RAEDiTRobotics-stage3-sweeps"
 
-  # Add your eval video parameters right here!
-  # eval_video_task: "lift"
-  eval_video_hdf5: "/student/denassau/CSC415/Project/RAEDiTRobotics/data/complete_unified_data/lift.hdf5"
-  # eval_video_episodes: 1
-  # eval_video_steps: 100
-  # eval_video_dir: "/tmp/eval_videos" # Keep it in /tmp to avoid quota issues
-  
-  # Optuna Pruning Settings
-  n_startup_trials: 10
-  n_warmup_steps: 400     # Don't prune any trial before epoch 500 (warmup phase)
-  pruning_percentile: 25.0   # Prune if in the worst 25% of trials
+  # Optuna Settings
+  n_startup_trials: 10        # random trials before TPE kicks in
+  n_warmup_steps: 50          # don't prune before epoch 50 (5 evals)
   n_trials_per_worker: 5
 
 manager:
-  sshpass_path: "/student/denassau/bin/sshpass" 
+  # SSH auth: set ssh_password in configs/secrets.yaml, or use SSH keys
+  # sshpass_path: "/path/to/sshpass"  # uncomment if using sshpass
 
+# Uncomment the machines you want to use
 nodes:
-  # - dh2020pc05
-  # - dh2020pc06
-  # - dh2020pc07
-  # - dh2020pc08
-  # - dh2020pc09
-  # - dh2020pc10
-  # - dh2020pc11
-  # - dh2020pc12
-  # - dh2020pc13
-  # - dh2020pc14
-  # - dh2020pc15
-  # - dh2020pc16
-  - dh2020pc17
-  # - dh2020pc18
-  # - dh2020pc19
-  # - dh2020pc20
-  # - dh2020pc21
-  # - dh2020pc22
-  # - dh2020pc23
-
-  # - dh2026pc05
-  # - dh2026pc06
-  # - dh2026pc07
-  # - dh2026pc08
-  # - dh2026pc09
-  # - dh2026pc10
-  # - dh2026pc11
-  # - dh2026pc12
-  # - dh2026pc13
-  # - dh2026pc14
-  # - dh2026pc15
-  # - dh2026pc16
-  # - dh2026pc17
-  # - dh2026pc18
-  # - dh2026pc19
-  # - dh2026pc20
+  # --- dh2026 lab (RTX 4080, 16GB) ---
+  # - dh2026pc01  # reserved for csc415user experiments
+  # - dh2026pc02  # PostgreSQL DB host
+  # - dh2026pc03  # reserved for csc415user experiments
+  - dh2026pc04
+  - dh2026pc05
+  - dh2026pc06
+  - dh2026pc07
+  - dh2026pc08
+  - dh2026pc09
+  - dh2026pc10
+  - dh2026pc11
+  - dh2026pc12
+  - dh2026pc13
+  - dh2026pc14
+  - dh2026pc15
+  - dh2026pc16
+  - dh2026pc17
+  - dh2026pc18
+  - dh2026pc19
+  - dh2026pc20
   # - dh2026pc21
+  # - dh2026pc22
+  # - dh2026pc23
+  # - dh2026pc24
+  # - dh2026pc25
+  # - dh2026pc26
+  # - dh2026pc27
+  # - dh2026pc28
+  # - dh2026pc29
+  # - dh2026pc30
 
 
 # ---------------------------------------------------------------------------
-# FIXED VARIABLES (Passed directly to Stage3Config)
+# FIXED VARIABLES (passed to V3Config via setattr)
 # ---------------------------------------------------------------------------
 training_static:
-  # UPDATE THESE PATHS to point to your actual Phase 1 weights & tokens!
-  stage1_checkpoint: "/student/denassau/CSC415/Project/RAEDiTRobotics/data/stage1_checkpoints/epoch_024.pt" 
-  hdf5_paths: # precomputed tokens
-    - "/student/denassau/CSC415/Project/RAEDiTRobotics/data/stage3_decompressed_tokens/lift_tokens_fast.hdf5"
+  # Paths (update these for your account)
+  stage1_checkpoint: "checkpoints/stage1/epoch_024.pt"
+  hdf5_paths:
+    - "data/robomimic/square/ph_abs_v15_tokens_bf16_none.hdf5"
+  eval_hdf5: "data/robomimic/square/ph_abs_v15.hdf5"
+
+  # Task
+  eval_task: "square"
+  eval_mode: "robomimic"
+  eval_exec_horizon: 8
+
+  # Eval schedule: full 50-episode eval every 10 epochs for Optuna signal
+  eval_every_epoch: 10000       # disable quick eval
+  eval_full_every_epoch: 10     # full eval every 10 epochs
+  eval_full_episodes: 50
+  eval_n_envs: 10               # conservative for shared machines
+  eval_image_size: 84
+
+  # Architecture (fixed)
+  ac_dim: 10
+  proprio_dim: 9
+  num_views: 4
+  n_active_cams: 2
+  T_obs: 2
+  T_pred: 10
+  T_act: 8
+  pad_before: 1
+  pad_after: 7
+  denoiser_type: "transformer"
+  spatial_pool_size: 7
+  n_cond_layers: 4
+  use_flow_matching: true
+
+  # Training
+  batch_size: 64
+  num_epochs: 300               # cosine LR hits 0 by epoch 299
+  warmup_steps: 1000
+  lr_schedule: "cosine"
+  norm_mode: "chi"
+  use_rot6d: true
+  cache_in_ram: true
+
+  # Precision
+  no_amp: true                  # fp32 compute (Chi's approach)
+  no_compile: true              # avoid compilation overhead per trial
+
+  # Checkpointing (minimize disk usage — 65 GB quota)
+  save_every_epoch: 0           # no permanent milestones
+  save_rolling_every: 50        # single rolling checkpoint for crash recovery
+  no_save_best: true            # skip best.pt (val loss)
+  no_save_best_success: false   # keep best_success.pt
+
+  # Val split
+  val_ratio: 0.02
+  val_seed: 42
 
 
 # ---------------------------------------------------------------------------
-# DYNAMIC VARIABLES (Optuna Search Space - 9 Variables)
+# DYNAMIC VARIABLES (Optuna Search Space)
 # ---------------------------------------------------------------------------
 hyperparameters_search:
   lr:
     method: "suggest_float"
     kwargs:
-      low: 1.0e-5
+      low: 5.0e-5
       high: 5.0e-4
       log: true
+
+  d_model:
+    method: "suggest_categorical"
+    kwargs:
+      choices: [256, 384, 512]
+
+  n_layers:
+    method: "suggest_int"
+    kwargs:
+      low: 6
+      high: 12
+      step: 2
+
+  p_drop_attn:
+    method: "suggest_float"
+    kwargs:
+      low: 0.0
+      high: 0.3
+      step: 0.05
+
+  weight_decay_denoiser:
+    method: "suggest_float"
+    kwargs:
+      low: 1.0e-4
+      high: 1.0e-2
+      log: true
+
+  ema_power:
+    method: "suggest_float"
+    kwargs:
+      low: 0.5
+      high: 0.9
+      step: 0.05
+
+  seed:
+    method: "suggest_int"
+    kwargs:
+      low: 1
+      high: 10000

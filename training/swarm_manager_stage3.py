@@ -28,22 +28,26 @@ def load_configs():
 def run_remote(cfg, node_name, domain, command, password=None, is_start_cmd=False):
     # Safely handle the domain dot whether it was included in the config or not
     formatted_domain = f".{domain.lstrip('.')}" if domain else ""
-    full_address = f"{node_name}{formatted_domain}"
-    
-    env = os.environ.copy()
-    if password:
-        # SECURE: Use -e flag to read from the SSHPASS environment variable
-        local_sshpass = cfg["manager"]["sshpass_path"]
+    host = f"{node_name}{formatted_domain}"
 
+    # Prepend ssh_user if configured (e.g., "alinaqee@dh2026pc04.utm.utoronto.ca")
+    ssh_user = cfg.get("ssh_user", "")
+    full_address = f"{ssh_user}@{host}" if ssh_user else host
+
+    env = os.environ.copy()
+    sshpass_path = cfg.get("manager", {}).get("sshpass_path")
+    if password and sshpass_path:
         ssh_cmd = [
-            local_sshpass, "-e", 
-            "ssh", "-o", "ConnectTimeout=5", 
+            sshpass_path, "-e",
+            "ssh", "-o", "ConnectTimeout=5",
             "-o", "StrictHostKeyChecking=no", full_address, command
         ]
-        env["SSHPASS"] = str(password) 
+        env["SSHPASS"] = str(password)
     else:
-        ssh_cmd = ["ssh", "-o", "ConnectTimeout=5", full_address, command]
-        
+        # SSH key auth (no sshpass needed)
+        ssh_cmd = ["ssh", "-o", "ConnectTimeout=5",
+                    "-o", "StrictHostKeyChecking=no", full_address, command]
+
     if is_start_cmd:
         return subprocess.Popen(ssh_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=env)
     else:

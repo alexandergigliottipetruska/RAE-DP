@@ -1,48 +1,86 @@
-import os
-import sys
-import yaml
-import json
+"""Optuna worker for distributed HP tuning of Stage 3 policy.
+
+Each worker connects to a shared Optuna DB (PostgreSQL), samples HPs via TPE,
+runs train_v3() with those HPs, and reports eval success rate as the objective.
+
+Pruning: train_v3() reports success rate to the trial after each full eval epoch.
+Optuna's MedianPruner kills underperforming trials early.
+
+Usage (launched by swarm_manager_stage3.py, or manually):
+    cd ~/RAEDiTRobotics
+    python training/swarm_worker_v3.py
+"""
+
+import gc
 import glob
+import json
+import logging
+import os
 import shutil
+import sys
 from datetime import datetime
+
 import optuna
-from huggingface_hub import HfApi
+import torch
 
 os.environ["PYOPENGL_PLATFORM"] = "egl"
 
-# 1. PATH FIX
+# Ensure project root is on sys.path (worker may be launched from training/ dir)
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-# 2. LOAD CONFIGS
+log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Config loading
+# ---------------------------------------------------------------------------
+
 def load_swarm_configs():
+    """Load swarm config + secrets (secrets.yaml is git-ignored)."""
+    import yaml
     base_path = os.path.join("configs", "swarm_stage3_config.yaml")
     secrets_path = os.path.join("configs", "secrets.yaml")
-    
-    with open(base_path, 'r') as f:
+
+    with open(base_path, "r") as f:
         cfg = yaml.safe_load(f)
     if os.path.exists(secrets_path):
-        with open(secrets_path, 'r') as f:
-            cfg.update(yaml.safe_load(f))
+        with open(secrets_path, "r") as f:
+            secrets = yaml.safe_load(f)
+            if secrets:
+                cfg.update(secrets)
     return cfg
+
 
 SWARM_CFG = load_swarm_configs()
 
-# 3. STORAGE REDIRECTION
-os.environ['HF_HOME'] = SWARM_CFG["project"].get("hf_cache_dir", "/tmp/hf_cache")
-os.environ['TORCH_HOME'] = SWARM_CFG["project"].get("torch_cache_dir", "/tmp/torch_cache")
+# Redirect caches to /tmp to avoid NFS quota issues
+os.environ["HF_HOME"] = SWARM_CFG["project"].get("hf_cache_dir", "/tmp/hf_cache")
+os.environ["TORCH_HOME"] = SWARM_CFG["project"].get("torch_cache_dir", "/tmp/torch_cache")
 
-# 4. IMPORT TEAMMATE'S V3 LOGIC
 from training.train_v3 import V3Config, train_v3
 
 SESSION_TS = datetime.now().strftime("%Y%m%d_%H%M")
 
-def upload_to_hf_and_clean(trial_dir, trial_number):
-    """Sends best.pt and logs to HF, then wipes local /tmp."""
-    
-    upload_token = SWARM_CFG.get("hf_upload_token", SWARM_CFG.get("hf_token"))
-    api = HfApi(token=upload_token)
+# d_model -> n_head mapping (must divide evenly)
+D_MODEL_TO_N_HEAD = {256: 4, 384: 6, 512: 8}
 
-    repo_id = SWARM_CFG["project"].get("hf_repo_id", "Denass04/RAEDiTRobotics-stage3-sweeps") 
+
+# ---------------------------------------------------------------------------
+# HuggingFace upload + cleanup
+# ---------------------------------------------------------------------------
+
+def upload_to_hf_and_clean(trial_dir, trial_number):
+    """Upload trial artifacts to HuggingFace, then wipe local directory."""
+    from huggingface_hub import HfApi
+
+    upload_token = SWARM_CFG.get("hf_upload_token", SWARM_CFG.get("hf_token"))
+    if not upload_token:
+        log.warning("No HF token found — skipping upload, cleaning up locally")
+        shutil.rmtree(trial_dir, ignore_errors=True)
+        return
+
+    api = HfApi(token=upload_token)
+    repo_id = SWARM_CFG["project"].get("hf_repo_id", "Denass04/RAEDiTRobotics-stage3-sweeps")
     study_name = SWARM_CFG["project"]["study_name"]
     path_in_repo = os.path.join(f"{study_name}_{SESSION_TS}", f"trial_{trial_number}")
 
@@ -51,99 +89,149 @@ def upload_to_hf_and_clean(trial_dir, trial_number):
             folder_path=trial_dir,
             path_in_repo=path_in_repo,
             repo_id=repo_id,
-            repo_type="model"
+            repo_type="model",
         )
-        shutil.rmtree(trial_dir)
-        print(f"✅ Successfully uploaded Trial {trial_number} to {repo_id}/{path_in_repo}")
+        log.info("Uploaded Trial %d to %s/%s", trial_number, repo_id, path_in_repo)
     except Exception as e:
-        print(f"❌ HF Upload failed for Trial {trial_number}: {e}")
+        log.warning("HF upload failed for Trial %d: %s", trial_number, e)
+    finally:
+        shutil.rmtree(trial_dir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# HP sampling
+# ---------------------------------------------------------------------------
 
 def sample_from_config(trial, search_space):
-    """Dynamically calls trial methods and unpacks YAML kwargs."""
-    sampled_hps = {}
-    for name, config in search_space.items():
-        kwargs = config["kwargs"].copy()
+    """Sample hyperparameters using Optuna trial methods defined in YAML."""
+    sampled = {}
+    for name, cfg in search_space.items():
+        kwargs = cfg["kwargs"].copy()
+        # Resolve string references to previously sampled HPs
         for k, v in kwargs.items():
-            if isinstance(v, str) and v in sampled_hps:
-                kwargs[k] = sampled_hps[v] 
-        suggest_method = getattr(trial, config["method"])
-        sampled_hps[name] = suggest_method(name, **kwargs)
-    return sampled_hps
+            if isinstance(v, str) and v in sampled:
+                kwargs[k] = sampled[v]
+        suggest_fn = getattr(trial, cfg["method"])
+        sampled[name] = suggest_fn(name, **kwargs)
+    return sampled
+
+
+# ---------------------------------------------------------------------------
+# Metrics extraction
+# ---------------------------------------------------------------------------
 
 def extract_best_success_rate(save_dir):
-    """Zero-touch metric extraction: parses the teammate's JSONL log."""
-    metrics_files = glob.glob(os.path.join(save_dir, "metrics_*.jsonl"))
-    if not metrics_files:
-        print("⚠️ Warning: No metrics file found. Returning 0.0 for success rate.")
+    """Parse metrics JSONL to find the best eval success rate."""
+    # train_v3 writes metrics.jsonl (or metrics_<timestamp>.jsonl)
+    candidates = glob.glob(os.path.join(save_dir, "metrics*.jsonl"))
+    if not candidates:
         return 0.0
-    
-    latest_file = max(metrics_files, key=os.path.getctime)
-    best_sr = -1.0
-    
-    with open(latest_file, 'r') as f:
-        for line in f:
-            try:
-                data = json.loads(line.strip())
-                if "eval_success_rate" in data:
-                    sr = data["eval_success_rate"]
+
+    best_sr = 0.0
+    for path in candidates:
+        with open(path, "r") as f:
+            for line in f:
+                try:
+                    data = json.loads(line.strip())
+                    sr = data.get("eval_success_rate", 0.0)
                     if sr > best_sr:
                         best_sr = sr
-            except json.JSONDecodeError:
-                continue
-                
-    return max(best_sr, 0.0)
+                except json.JSONDecodeError:
+                    continue
+    return best_sr
+
+
+# ---------------------------------------------------------------------------
+# Optuna objective
+# ---------------------------------------------------------------------------
 
 def objective(trial):
-    scratch_dir = SWARM_CFG["project"].get("scratch_dir", "/tmp/denassau_stage3")
-    trial_dir = f"{scratch_dir}/trial_{trial.number}"
+    scratch_dir = SWARM_CFG["project"].get("scratch_dir", "/tmp/optuna_trials")
+    trial_dir = os.path.join(scratch_dir, f"trial_{trial.number}")
     os.makedirs(trial_dir, exist_ok=True)
 
-    # 1. Sample hyperparameters
+    # 1. Sample hyperparameters from search space
     hps = sample_from_config(trial, SWARM_CFG["hyperparameters_search"])
 
-    # 2. Base Configuration (Teammate's defaults)
+    # 2. Build V3Config with static overrides
     config = V3Config()
-    
-    # 3. Apply static overrides from your swarm config
     if "training_static" in SWARM_CFG:
         for key, value in SWARM_CFG["training_static"].items():
             setattr(config, key, value)
-            
-    # 4. Apply dynamic Optuna overrides
+
+    # 3. Apply dynamic Optuna overrides
     for key, value in hps.items():
         setattr(config, key, value)
-        
-    # Force the save directory to our isolated trial folder
+
+    # 4. Handle d_model -> n_head constraint
+    if "d_model" in hps:
+        config.n_head = D_MODEL_TO_N_HEAD.get(hps["d_model"], 4)
+
+    # 5. Force save directory to isolated trial folder
     config.save_dir = trial_dir
 
+    log.info("Trial %d starting with: %s", trial.number, hps)
+
     try:
-        # 5. Run the Unmodified Training Loop
-        print(f"🚀 Starting Trial {trial.number} with config overrides: {hps}")
-        train_v3(config=config, device="cuda")
-        
-        # 6. Extract the ultimate success rate
-        best_success_rate = extract_best_success_rate(trial_dir)
-        print(f"🏆 Trial {trial.number} finished with Best Success Rate: {best_success_rate * 100:.1f}%")
-        
+        best_sr = train_v3(config=config, device="cuda", trial=trial)
+
+        log.info("Trial %d finished — best success rate: %.1f%%",
+                 trial.number, (best_sr or 0.0) * 100)
+
+        # Fallback: parse metrics if train_v3 returned None
+        if best_sr is None or best_sr < 0:
+            best_sr = extract_best_success_rate(trial_dir)
+
         upload_to_hf_and_clean(trial_dir, trial.number)
-        return best_success_rate
+        return best_sr
+
+    except optuna.exceptions.TrialPruned:
+        sr = extract_best_success_rate(trial_dir)
+        log.info("Trial %d pruned — best success rate before pruning: %.1f%%",
+                 trial.number, sr * 100)
+        upload_to_hf_and_clean(trial_dir, trial.number)
+        raise  # re-raise so Optuna marks it as PRUNED
 
     except Exception as e:
-        print(f"❌ Trial {trial.number} failed: {e}")
+        log.error("Trial %d failed: %s", trial.number, e)
         if os.path.exists(trial_dir):
-            shutil.rmtree(trial_dir)
-        raise e 
+            shutil.rmtree(trial_dir, ignore_errors=True)
+        raise
+
+    finally:
+        # Free GPU memory between trials
+        gc.collect()
+        torch.cuda.empty_cache()
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+
+    pruner = optuna.pruners.MedianPruner(
+        n_startup_trials=SWARM_CFG["project"].get("n_startup_trials", 10),
+        n_warmup_steps=SWARM_CFG["project"].get("n_warmup_steps", 50),
+    )
+
     study = optuna.create_study(
         study_name=SWARM_CFG["project"]["study_name"],
         storage=SWARM_CFG["db_url"],
         load_if_exists=True,
-        direction="maximize" 
+        direction="maximize",
+        pruner=pruner,
     )
 
     study.optimize(
         objective,
-        n_trials=SWARM_CFG["project"]["n_trials_per_worker"],
-        catch=(Exception,)
+        n_trials=SWARM_CFG["project"].get("n_trials_per_worker", 5),
+        catch=(Exception,),
     )
+
+    log.info("Worker finished. Best trial: %s (value=%.3f)",
+             study.best_trial.number, study.best_value)

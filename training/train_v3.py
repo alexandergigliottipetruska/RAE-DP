@@ -404,6 +404,7 @@ def train_v3(
     *,
     device: str = "cuda",
     resume_from: str | None = None,
+    trial=None,
 ):
     """Main V3 training entry point.
 
@@ -925,6 +926,14 @@ def train_v3(
                             log.info("New best success rate: %.1f%% (epoch %d)", sr * 100, epoch)
                     except Exception as e:
                         log.warning("Eval failed at epoch %d: %s", epoch, e)
+                        sr = None
+                    # Optuna: report success rate and check pruning
+                    if trial is not None and sr is not None:
+                        trial.report(sr, epoch)
+                        if trial.should_prune():
+                            log.info("Trial pruned by Optuna at epoch %d (sr=%.1f%%)", epoch, sr * 100)
+                            import optuna
+                            raise optuna.exceptions.TrialPruned()
 
             # Best checkpoint (by val loss) with 5-epoch cooldown
             if not config.no_save_best and val_avg.get("policy", float("inf")) < best_val_loss:
@@ -943,9 +952,12 @@ def train_v3(
             torch.distributed.barrier()
 
     if is_main:
-        log.info("V3 training complete. Best val loss=%.4f", best_val_loss)
+        log.info("V3 training complete. Best val loss=%.4f, best success rate=%.1f%%",
+                 best_val_loss, best_success_rate * 100)
         log.removeHandler(fh)
         fh.close()
+
+    return best_success_rate
 
 
 @torch.no_grad()
