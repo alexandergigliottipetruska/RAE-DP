@@ -1,8 +1,8 @@
-# Distributed Optuna HP sweep for Stage 3 (Square task, bf16 tokens)
+# Distributed Optuna HP sweep for Stage 3 — Round 2 (focused, weighted metric)
 # Usage: python training/swarm_manager_stage3.py start|stop|status|restart_idle
 
 project:
-  study_name: "v3_square_bf16_hp_sweep"
+  study_name: "v3_square_bf16_hp_sweep_r2"
   domain: "utm.utoronto.ca"
   project_root: "~/RAEDiTRobotics"
   venv_path: "~/venv_rlbench/bin/activate"
@@ -16,9 +16,9 @@ project:
   hf_repo_id: "swagman8008/RAE-DP-stage3-sweeps"
 
   # Optuna Settings
-  n_startup_trials: 10        # random trials before TPE kicks in
-  n_warmup_steps: 50          # don't prune before epoch 50 (5 evals)
-  n_trials_per_worker: 5
+  n_startup_trials: 8         # random trials before TPE kicks in
+  n_warmup_steps: 50          # don't prune before epoch 50
+  n_trials_per_worker: 3
 
 manager:
   # SSH auth: set ssh_password in configs/secrets.yaml, or use SSH keys
@@ -74,30 +74,30 @@ training_static:
   eval_mode: "robomimic"
   eval_exec_horizon: 8
 
-  # Eval schedule: full 50-episode eval every 10 epochs for Optuna signal
+  # Eval: 100 episodes, 15 envs (15x6 + 10x1 = 100), every 10 epochs
   eval_every_epoch: 10000       # disable quick eval
   eval_full_every_epoch: 10     # full eval every 10 epochs
-  eval_full_episodes: 50
-  eval_n_envs: 10               # conservative for shared machines
+  eval_full_episodes: 100
+  eval_n_envs: 15
   eval_image_size: 84
 
-  # Architecture (fixed)
+  # Architecture (locked from Round 1 findings)
   ac_dim: 10
   proprio_dim: 9
   num_views: 4
   n_active_cams: 2
-  T_obs: 2
   T_pred: 10
   T_act: 8
   pad_before: 1
   pad_after: 7
   denoiser_type: "transformer"
   spatial_pool_size: 7
+  n_cond_layers: 4              # locked: 4 dominated top-10 in R1
   use_flow_matching: true
 
   # Training
   batch_size: 64
-  num_epochs: 300               # cosine LR hits 0 by epoch 299
+  num_epochs: 200               # reduced from 300: 87% of peaks by epoch 199
   warmup_steps: 1000
   lr_schedule: "cosine"
   norm_mode: "chi"
@@ -120,44 +120,41 @@ training_static:
 
 
 # ---------------------------------------------------------------------------
-# DYNAMIC VARIABLES (Optuna Search Space)
+# DYNAMIC VARIABLES (Optuna Search Space — Round 2, focused)
+# Narrowed ranges based on Round 1 findings (75 trials)
 # ---------------------------------------------------------------------------
 hyperparameters_search:
   lr:
     method: "suggest_float"
     kwargs:
-      low: 5.0e-5
-      high: 5.0e-4
+      low: 1.8e-4
+      high: 3.6e-4
       log: true
 
   lr_adapter:
     method: "suggest_float"
     kwargs:
-      low: 1.0e-6
-      high: 1.0e-4
+      low: 8.0e-6
+      high: 2.8e-5
       log: true
 
   d_model:
     method: "suggest_categorical"
     kwargs:
-      choices: [256, 384, 512]
+      choices: [384]
 
   n_layers:
-    method: "suggest_int"
+    method: "suggest_categorical"
     kwargs:
-      low: 6
-      high: 12
-      step: 2
-
-  n_cond_layers:
-    method: "suggest_int"
-    kwargs:
-      low: 2
-      high: 6
-      step: 2
+      choices: [4, 6, 8]
 
   p_drop_attn:
     method: "suggest_float"
     kwargs:
-      low: 0.0
-      high: 0.3
+      low: 0.05
+      high: 0.22
+
+  T_obs:
+    method: "suggest_categorical"
+    kwargs:
+      choices: [1, 2, 3]

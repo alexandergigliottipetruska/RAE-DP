@@ -73,7 +73,7 @@ def upload_to_hf_and_clean(trial_dir, trial_number):
     """Upload trial artifacts to HuggingFace, then wipe local directory."""
     from huggingface_hub import HfApi
 
-    upload_token = SWARM_CFG.get("hf_upload_token", SWARM_CFG.get("hf_token"))
+    upload_token = SWARM_CFG.get("hf_upload_token", SWARM_CFG.get("hf_token", SWARM_CFG.get("huggingface_token")))
     if not upload_token:
         log.warning("No HF token found — skipping upload, cleaning up locally")
         shutil.rmtree(trial_dir, ignore_errors=True)
@@ -120,25 +120,34 @@ def sample_from_config(trial, search_space):
 # Metrics extraction
 # ---------------------------------------------------------------------------
 
-def extract_best_success_rate(save_dir):
-    """Parse metrics JSONL to find the best eval success rate."""
-    # train_v3 writes metrics.jsonl (or metrics_<timestamp>.jsonl)
+def extract_eval_success_rates(save_dir):
+    """Parse metrics JSONL to get all eval success rates in order."""
     candidates = glob.glob(os.path.join(save_dir, "metrics*.jsonl"))
     if not candidates:
-        return 0.0
+        return []
 
-    best_sr = 0.0
+    rates = []
     for path in candidates:
         with open(path, "r") as f:
             for line in f:
                 try:
                     data = json.loads(line.strip())
-                    sr = data.get("eval_success_rate", 0.0)
-                    if sr > best_sr:
-                        best_sr = sr
+                    if "eval_success_rate" in data:
+                        rates.append(data["eval_success_rate"])
                 except json.JSONDecodeError:
                     continue
-    return best_sr
+    return rates
+
+
+def extract_weighted_success_rate(save_dir, peak_weight=0.5, last_n=10):
+    """Compute weighted objective: peak_weight * peak + (1 - peak_weight) * last-N avg."""
+    rates = extract_eval_success_rates(save_dir)
+    if not rates:
+        return 0.0
+
+    peak = max(rates)
+    last_n_avg = sum(rates[-last_n:]) / len(rates[-last_n:])
+    return peak_weight * peak + (1 - peak_weight) * last_n_avg
 
 
 # ---------------------------------------------------------------------------
@@ -177,22 +186,24 @@ def objective(trial):
     log.info("Trial %d starting with: %s", trial.number, hps)
 
     try:
-        best_sr = train_v3(config=config, device="cuda", trial=trial)
+        train_v3(config=config, device="cuda", trial=trial)
 
-        log.info("Trial %d finished — best success rate: %.1f%%",
-                 trial.number, (best_sr or 0.0) * 100)
+        # Compute weighted objective from metrics (0.5 * peak + 0.5 * last-10 avg)
+        objective_value = extract_weighted_success_rate(trial_dir)
+        rates = extract_eval_success_rates(trial_dir)
+        peak = max(rates) if rates else 0.0
+        last10 = sum(rates[-10:]) / len(rates[-10:]) if rates else 0.0
 
-        # Fallback: parse metrics if train_v3 returned None
-        if best_sr is None or best_sr < 0:
-            best_sr = extract_best_success_rate(trial_dir)
+        log.info("Trial %d finished — peak: %.1f%%, last-10 avg: %.1f%%, weighted: %.4f",
+                 trial.number, peak * 100, last10 * 100, objective_value)
 
         upload_to_hf_and_clean(trial_dir, trial.number)
-        return best_sr
+        return objective_value
 
     except optuna.exceptions.TrialPruned:
-        sr = extract_best_success_rate(trial_dir)
-        log.info("Trial %d pruned — best success rate before pruning: %.1f%%",
-                 trial.number, sr * 100)
+        objective_value = extract_weighted_success_rate(trial_dir)
+        log.info("Trial %d pruned — weighted objective: %.4f",
+                 trial.number, objective_value)
         upload_to_hf_and_clean(trial_dir, trial.number)
         raise  # re-raise so Optuna marks it as PRUNED
 
