@@ -1,8 +1,11 @@
-# Distributed Optuna HP sweep for Stage 3 — Round 3 (rapid 50-epoch, wide lr/lr_adapter)
+# Distributed Optuna HP sweep for Stage 3 — Round 3b
+# Same as R3 but with fixed metric: 0.3*peak + 0.7*last_6_avg (instead of overall_avg).
+# R3's overall_avg was polluted by pre-convergence warmup evals (epoch 4/9/14 under
+# warmup_steps=1000), biasing TPE toward fast-converging rather than best-converging HPs.
 # Usage: python training/swarm_manager_stage3.py start|stop|status|restart_idle
 
 project:
-  study_name: "v3_square_bf16_hp_sweep_r3"
+  study_name: "v3_square_bf16_hp_sweep_r3b"
   domain: "utm.utoronto.ca"
   project_root: "~/RAEDiTRobotics"
   venv_path: "~/venv_rlbench/bin/activate"

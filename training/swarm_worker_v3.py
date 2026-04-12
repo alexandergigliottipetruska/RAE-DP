@@ -139,15 +139,22 @@ def extract_eval_success_rates(save_dir):
     return rates
 
 
-def extract_weighted_success_rate(save_dir, peak_weight=0.3):
-    """Compute weighted objective: peak_weight * peak + (1 - peak_weight) * overall_avg."""
+def extract_weighted_success_rate(save_dir, peak_weight=0.3, tail_n=6):
+    """Compute weighted objective: peak_weight * peak + (1 - peak_weight) * last_N_avg.
+
+    The tail window (last tail_n evals) skips the warmup phase where eval SR
+    is dominated by noise, so the metric rewards final-plateau quality rather
+    than convergence speed. For pruned trials with fewer than tail_n evals,
+    the whole trajectory is used.
+    """
     rates = extract_eval_success_rates(save_dir)
     if not rates:
         return 0.0
 
     peak = max(rates)
-    avg = sum(rates) / len(rates)
-    return peak_weight * peak + (1 - peak_weight) * avg
+    tail = rates[-tail_n:]  # last N evals; falls back to all if len(rates) < tail_n
+    tail_avg = sum(tail) / len(tail)
+    return peak_weight * peak + (1 - peak_weight) * tail_avg
 
 
 # ---------------------------------------------------------------------------
@@ -188,14 +195,15 @@ def objective(trial):
     try:
         train_v3(config=config, device="cuda", trial=trial)
 
-        # Compute weighted objective from metrics (0.3 * peak + 0.7 * avg)
+        # Compute weighted objective from metrics (0.3 * peak + 0.7 * last_6_avg)
         objective_value = extract_weighted_success_rate(trial_dir)
         rates = extract_eval_success_rates(trial_dir)
         peak = max(rates) if rates else 0.0
-        avg = sum(rates) / len(rates) if rates else 0.0
+        tail = rates[-6:] if rates else []
+        tail_avg = sum(tail) / len(tail) if tail else 0.0
 
-        log.info("Trial %d finished — peak: %.1f%%, avg: %.1f%%, weighted: %.4f",
-                 trial.number, peak * 100, avg * 100, objective_value)
+        log.info("Trial %d finished — peak: %.1f%%, last6_avg: %.1f%%, weighted: %.4f",
+                 trial.number, peak * 100, tail_avg * 100, objective_value)
 
         upload_to_hf_and_clean(trial_dir, trial.number)
         return objective_value
