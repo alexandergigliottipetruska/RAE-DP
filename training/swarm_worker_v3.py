@@ -139,15 +139,15 @@ def extract_eval_success_rates(save_dir):
     return rates
 
 
-def extract_weighted_success_rate(save_dir, peak_weight=0.5, last_n=10):
-    """Compute weighted objective: peak_weight * peak + (1 - peak_weight) * last-N avg."""
+def extract_weighted_success_rate(save_dir, peak_weight=0.3):
+    """Compute weighted objective: peak_weight * peak + (1 - peak_weight) * overall_avg."""
     rates = extract_eval_success_rates(save_dir)
     if not rates:
         return 0.0
 
     peak = max(rates)
-    last_n_avg = sum(rates[-last_n:]) / len(rates[-last_n:])
-    return peak_weight * peak + (1 - peak_weight) * last_n_avg
+    avg = sum(rates) / len(rates)
+    return peak_weight * peak + (1 - peak_weight) * avg
 
 
 # ---------------------------------------------------------------------------
@@ -188,14 +188,14 @@ def objective(trial):
     try:
         train_v3(config=config, device="cuda", trial=trial)
 
-        # Compute weighted objective from metrics (0.5 * peak + 0.5 * last-10 avg)
+        # Compute weighted objective from metrics (0.3 * peak + 0.7 * avg)
         objective_value = extract_weighted_success_rate(trial_dir)
         rates = extract_eval_success_rates(trial_dir)
         peak = max(rates) if rates else 0.0
-        last10 = sum(rates[-10:]) / len(rates[-10:]) if rates else 0.0
+        avg = sum(rates) / len(rates) if rates else 0.0
 
-        log.info("Trial %d finished — peak: %.1f%%, last-10 avg: %.1f%%, weighted: %.4f",
-                 trial.number, peak * 100, last10 * 100, objective_value)
+        log.info("Trial %d finished — peak: %.1f%%, avg: %.1f%%, weighted: %.4f",
+                 trial.number, peak * 100, avg * 100, objective_value)
 
         upload_to_hf_and_clean(trial_dir, trial.number)
         return objective_value
@@ -229,9 +229,10 @@ if __name__ == "__main__":
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
 
-    pruner = optuna.pruners.MedianPruner(
+    pruner = optuna.pruners.PercentilePruner(
+        percentile=SWARM_CFG["project"].get("pruning_percentile", 25.0),
         n_startup_trials=SWARM_CFG["project"].get("n_startup_trials", 10),
-        n_warmup_steps=SWARM_CFG["project"].get("n_warmup_steps", 50),
+        n_warmup_steps=SWARM_CFG["project"].get("n_warmup_steps", 19),
     )
 
     study = optuna.create_study(

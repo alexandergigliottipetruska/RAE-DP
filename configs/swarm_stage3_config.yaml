@@ -1,8 +1,8 @@
-# Distributed Optuna HP sweep for Stage 3 — Round 2 (focused, weighted metric)
+# Distributed Optuna HP sweep for Stage 3 — Round 3 (rapid 50-epoch, wide lr/lr_adapter)
 # Usage: python training/swarm_manager_stage3.py start|stop|status|restart_idle
 
 project:
-  study_name: "v3_square_bf16_hp_sweep_r2"
+  study_name: "v3_square_bf16_hp_sweep_r3"
   domain: "utm.utoronto.ca"
   project_root: "~/RAEDiTRobotics"
   venv_path: "~/venv_rlbench/bin/activate"
@@ -15,10 +15,11 @@ project:
   scratch_dir: "/tmp/optuna_trials"
   hf_repo_id: "swagman8008/RAE-DP-stage3-sweeps"
 
-  # Optuna Settings
-  n_startup_trials: 8         # random trials before TPE kicks in
-  n_warmup_steps: 50          # don't prune before epoch 50
-  n_trials_per_worker: 3
+  # Optuna Settings — aggressive pruning for rapid 50-epoch runs
+  n_startup_trials: 10
+  n_warmup_steps: 19          # allow ~4 evals before pruning (evals at 4, 9, 14, 19, ...)
+  pruning_percentile: 25.0    # PercentilePruner: kill bottom 25%
+  n_trials_per_worker: 10     # each worker does 10 rapid trials (~9 hours at 50 min each)
 
 manager:
   # SSH auth: set ssh_password in configs/secrets.yaml, or use SSH keys
@@ -74,31 +75,34 @@ training_static:
   eval_mode: "robomimic"
   eval_exec_horizon: 8
 
-  # Eval: 100 episodes, 15 envs (15x6 + 10x1 = 100), every 10 epochs
+  # Eval: 100 episodes, 15 envs, every 5 epochs (10 evals per trial)
   eval_every_epoch: 10000       # disable quick eval
-  eval_full_every_epoch: 10     # full eval every 10 epochs
+  eval_full_every_epoch: 5      # full eval every 5 epochs
   eval_full_episodes: 100
   eval_n_envs: 15
   eval_image_size: 84
 
-  # Architecture (locked from Round 1 findings)
+  # Architecture (locked from R1+R2 findings)
   ac_dim: 10
   proprio_dim: 9
   num_views: 4
   n_active_cams: 2
+  T_obs: 2                      # locked: best in R2
   T_pred: 10
   T_act: 8
   pad_before: 1
   pad_after: 7
   denoiser_type: "transformer"
   spatial_pool_size: 7
-  n_cond_layers: 4              # locked: 4 dominated top-10 in R1
+  d_model: 384                  # locked: dominates all top trials
+  n_head: 6                     # paired with d=384
+  n_cond_layers: 4              # locked: best in R1 d=384 breakdown
   use_flow_matching: true
 
-  # Training
+  # Training — rapid 50-epoch runs with cosine schedule calibrated to 50 epochs
   batch_size: 64
-  num_epochs: 200               # reduced from 300: 87% of peaks by epoch 199
-  warmup_steps: 1000
+  num_epochs: 50                # rapid sweep: ~50 min per trial at d=384
+  warmup_steps: 1000            # ~2.2 epochs of warmup
   lr_schedule: "cosine"
   norm_mode: "chi"
   use_rot6d: true
@@ -110,7 +114,7 @@ training_static:
 
   # Checkpointing (minimize disk usage — 65 GB quota)
   save_every_epoch: 0           # no permanent milestones
-  save_rolling_every: 50        # single rolling checkpoint for crash recovery
+  save_rolling_every: 25        # rolling backup mid-run
   no_save_best: true            # skip best.pt (val loss)
   no_save_best_success: false   # keep best_success.pt
 
@@ -120,28 +124,23 @@ training_static:
 
 
 # ---------------------------------------------------------------------------
-# DYNAMIC VARIABLES (Optuna Search Space — Round 2, focused)
-# Narrowed ranges based on Round 1 findings (75 trials)
+# DYNAMIC VARIABLES (Optuna Search Space — Round 3, wide)
+# Let TPE explore 2-3 orders of magnitude for lr / lr_adapter
 # ---------------------------------------------------------------------------
 hyperparameters_search:
   lr:
     method: "suggest_float"
     kwargs:
-      low: 1.8e-4
-      high: 3.6e-4
+      low: 1.0e-5
+      high: 1.0e-3
       log: true
 
   lr_adapter:
     method: "suggest_float"
     kwargs:
-      low: 8.0e-6
-      high: 2.8e-5
+      low: 1.0e-7
+      high: 1.0e-4
       log: true
-
-  d_model:
-    method: "suggest_categorical"
-    kwargs:
-      choices: [384]
 
   n_layers:
     method: "suggest_categorical"
@@ -151,10 +150,5 @@ hyperparameters_search:
   p_drop_attn:
     method: "suggest_float"
     kwargs:
-      low: 0.05
-      high: 0.22
-
-  T_obs:
-    method: "suggest_categorical"
-    kwargs:
-      choices: [1, 2, 3]
+      low: 0.03
+      high: 0.25
